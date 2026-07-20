@@ -3,6 +3,7 @@ import hmac
 import json
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from outline_backup.core.config import Settings
@@ -58,3 +59,10 @@ def test_bad_json_400():
     client, _ = make_client()
     body = b"not json"
     assert client.post("/webhook", content=body, headers=signed(body)).status_code == 400
+
+
+def test_startup_refuses_empty_webhook_secret():
+    app = create_app(Settings())
+    with pytest.raises(RuntimeError, match="OUTLINE_WEBHOOK_SECRET is required"):
+        with TestClient(app):
+            pass

@@ -22,6 +22,7 @@ content (documents, hierarchy, comment threads) into a fresh instance via the pu
 
     pip install .                       # or: docker build -t outline-backup .
     outline-backup init                 # interactive: tokens, destination repo, webhook setup
+                                         # writes both config.toml AND a matching .env
     outline-backup backfill --config config.toml
     uvicorn outline_backup.service.app:app --host 0.0.0.0 --port 8080
     # or: docker run --env-file .env -p 8080:8080 outline-backup
@@ -52,6 +53,19 @@ permissions, revision history, share links, API keys, or original comment author
 (Outline's API cannot impersonate). For byte-identical disaster recovery, also back up your
 Postgres database and file storage at the infrastructure level — this tool is the portable,
 provider-independent content layer.
+
+## Roadmap & known limitations
+
+- `--backfill-on-start` service flag — planned. Today the service only reacts to webhooks after
+  it starts; run `outline-backup backfill` yourself to catch up on anything missed while it
+  was down.
+- `restore --collections` filter — planned. Restore always rebuilds every collection in the
+  backup tree; there is no way yet to restore a subset.
+- Renames land as two commits on git destinations (one for the old path's removal, one for the
+  new path), leaving a brief window where the tree looks inconsistent. A subsequent `backfill`
+  heals this.
+- `backfill` only adds and updates documents — it does not prune documents that were deleted
+  upstream in Outline. Deletions are handled by the live webhook path, not by backfill.
 
 ## License
 

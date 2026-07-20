@@ -148,7 +148,7 @@ def restore(
 
         for doc_id, member_path in members.items():
             entry = manifest.documents[doc_id]
-            title = member_path.rsplit("/", 1)[-1].removesuffix(".md")
+            title = entry["title"]
             new_doc_id = by_title.get(title)
             if new_doc_id is None:
                 report.warnings.append(f"no imported match for document: {title}")

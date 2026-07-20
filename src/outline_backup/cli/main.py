@@ -52,7 +52,13 @@ def export(output_dir: Path, config: Path = CONFIG_OPT) -> None:
 def restore(
     source_dir: Path,
     target_url: str = typer.Option(..., "--target-url"),
-    target_token: str = typer.Option(..., "--target-token"),
+    target_token: str = typer.Option(
+        ...,
+        "--target-token",
+        envvar="OUTLINE_TARGET_TOKEN",
+        prompt="Target Outline API token",
+        hide_input=True,
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
     """Restore a backup tree (local clone/export) into a fresh Outline instance."""
@@ -156,6 +162,25 @@ def init(
         f.write(config_text)
     typer.echo(f"Wrote {output}. Run the service with these values as env vars, or pass --config.")
     typer.echo("Config contains live credentials — kept owner-readable only (0600).")
+
+    env_path = output.parent / ".env"
+    env_text = (
+        f"OUTLINE_URL={outline_url}\n"
+        f"OUTLINE_API_TOKEN={outline_token}\n"
+        f"OUTLINE_WEBHOOK_SECRET={secret}\n"
+        f"DEST_TYPE={dest_type}\n"
+        f"DEST_REPO={dest_repo}\n"
+        f"DEST_BRANCH={dest_branch}\n"
+        f"DEST_PATH={dest_path}\n"
+        f"GITHUB_TOKEN={github_token}\n"
+        "DEBOUNCE_SECONDS=60\n"
+        "INCLUDE_ATTACHMENTS=true\n"
+    )
+    env_fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(env_fd, 0o600)
+    with os.fdopen(env_fd, "w") as f:
+        f.write(env_text)
+    typer.echo(f"Wrote {env_path}. Use it with --env-file for docker run or local dev.")
 
 
 if __name__ == "__main__":

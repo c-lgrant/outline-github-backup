@@ -20,6 +20,10 @@ def create_app(settings: Settings | None = None, worker: DebounceWorker | None =
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if not settings.outline_webhook_secret:
+            raise RuntimeError(
+                "OUTLINE_WEBHOOK_SECRET is required — refusing to start unauthenticated"
+            )
         if app.state.worker is None:
             from outline_backup.core.outline_client import OutlineClient
             from outline_backup.core.sync import SyncEngine

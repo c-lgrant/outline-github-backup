@@ -137,3 +137,36 @@ def test_init_resecures_existing_config(tmp_path):
     # Verify file content was replaced.
     cfg = tomllib.loads(output.read_text())
     assert cfg["DEST_REPO"] == "example/backup-data"
+
+
+@respx.mock
+def test_init_also_writes_env_template(tmp_path):
+    respx.get("https://api.github.com/repos/example/backup-data").mock(
+        return_value=httpx.Response(200, json={"private": True})
+    )
+    output = tmp_path / "config.toml"
+    result = runner.invoke(app, init_args(tmp_path, extra=["--no-create-webhook"]))
+    assert result.exit_code == 0, result.output
+
+    env_path = output.parent / ".env"
+    assert env_path.exists()
+    mode = env_path.stat().st_mode & 0o777
+    assert mode == 0o600, oct(mode)
+
+    env_text = env_path.read_text()
+    lines = dict(line.split("=", 1) for line in env_text.splitlines() if line)
+    assert set(lines) == {
+        "OUTLINE_URL",
+        "OUTLINE_API_TOKEN",
+        "OUTLINE_WEBHOOK_SECRET",
+        "DEST_TYPE",
+        "DEST_REPO",
+        "DEST_BRANCH",
+        "DEST_PATH",
+        "GITHUB_TOKEN",
+        "DEBOUNCE_SECONDS",
+        "INCLUDE_ATTACHMENTS",
+    }
+    secret = lines["OUTLINE_WEBHOOK_SECRET"]
+    assert len(secret) == 64
+    assert str(env_path) in result.output

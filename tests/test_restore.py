@@ -256,6 +256,22 @@ def test_cli_dry_run_prints_collection_file_counts(tmp_path: Path):
     assert "Guides: 1 document(s)" in result.output
 
 
+def test_cli_restore_target_token_from_env(tmp_path: Path, monkeypatch):
+    # --target-token deliberately omitted from argv; the CLI must accept the
+    # token via the OUTLINE_TARGET_TOKEN env var instead of requiring it on
+    # the command line (where it would leak into shell history/process list).
+    dest_dir = tmp_path / "src"
+    dest_dir.mkdir()
+    seed_source(dest_dir)
+    monkeypatch.setenv("OUTLINE_TARGET_TOKEN", "tok")
+    result = runner.invoke(
+        app,
+        ["restore", str(dest_dir), "--target-url", BASE, "--dry-run"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Guides: 1 document(s)" in result.output
+
+
 # -- Finding 5: _wait_for_operation error branch + no trailing sleep -----
 
 
@@ -280,3 +296,68 @@ def test_wait_for_operation_does_not_sleep_after_final_poll(monkeypatch):
     with pytest.raises(RestoreError, match="timed out"):
         _wait_for_operation(client, "op1")
     assert len(sleep_calls) == 59
+
+
+# -- Fix: comment-replay lookup must use the manifest title, not the -----
+# -- disambiguated zip member filename stem ------------------------------
+
+
+@respx.mock
+def test_restore_matches_disambiguated_doc_by_original_title(tmp_path: Path):
+    dest = LocalDestination(tmp_path)
+    m = Manifest()
+    m.set_collection("col1", name="Guides", slug="guides-Ab12")
+    # doc1's sanitized title collides with doc2's literal title, so doc2 (sorted
+    # second by path) gets its zip member filename disambiguated with its slug —
+    # even though doc2's title ("Foo/Bar") is unique across the whole manifest.
+    m.set_document("doc1", title="Foo-Bar", slug="foo-bar-Aa1",
+                   path="collections/guides-Ab12/a.md",
+                   collection_id="col1", parent_document_id=None, updated_at=None)
+    m.set_document("doc2", title="Foo/Bar", slug="foo-bar-Bb2",
+                   path="collections/guides-Ab12/b.md",
+                   collection_id="col1", parent_document_id=None, updated_at=None)
+    sidecar = [{"id": "c1", "createdAt": "2026-01-01T00:00:00Z", "parentCommentId": None,
+                "authorName": "Alex", "data": {"type": "doc", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "hi"}]}]}}]
+    dest.write_files({
+        "_manifest.json": m.to_bytes(),
+        "collections/guides-Ab12/a.md": b"first\n",
+        "collections/guides-Ab12/b.md": b"second\n",
+        "collections/guides-Ab12/b.comments.json": (json.dumps(sidecar) + "\n").encode(),
+    }, "seed")
+
+    manifest = Manifest.from_bytes(dest.read_file("_manifest.json"))
+    members = restore_module._zip_members(manifest, "col1")
+    # Sanity check the fixture actually produces a disambiguated member for doc2.
+    assert members["doc2"] == "Guides/Foo-Bar (foo-bar-Bb2).md"
+
+    respx.post(f"{BASE}/api/attachments.create").mock(return_value=httpx.Response(200, json={
+        "data": {"attachment": {"id": "att1"}, "uploadUrl": "https://upload.example.com/u", "form": {}}
+    }))
+    respx.post(f"{BASE}/api/collections.import").mock(return_value=httpx.Response(200, json={
+        "data": {"fileOperation": {"id": "op1", "state": "creating"}}
+    }))
+    respx.post(f"{BASE}/api/fileOperations.info").mock(return_value=httpx.Response(200, json={
+        "data": {"id": "op1", "state": "complete"}
+    }))
+    respx.post(f"{BASE}/api/collections.list").mock(return_value=httpx.Response(200, json={
+        "data": [{"id": "newcol", "name": "Guides", "urlId": "Zz99"}]
+    }))
+    respx.post(f"{BASE}/api/documents.list").mock(return_value=httpx.Response(200, json={
+        "data": [
+            {"id": "newdoc1", "title": "Foo-Bar", "urlId": "Qq11", "collectionId": "newcol"},
+            {"id": "newdoc2", "title": "Foo/Bar", "urlId": "Qq12", "collectionId": "newcol"},
+        ]
+    }))
+    comment_route = respx.post(f"{BASE}/api/comments.create").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "newc1"}})
+    )
+    report = restore(
+        OutlineClient(BASE, "tok"), dest,
+        upload=lambda url, form, content: None,
+    )
+    assert report.documents_matched == 2
+    assert report.comments_created == 1
+    assert not any("no imported match" in w for w in report.warnings)
+    sent = json.loads(comment_route.calls.last.request.content)
+    assert sent["documentId"] == "newdoc2"
