@@ -151,6 +151,7 @@ def init(
         "INCLUDE_ATTACHMENTS = true\n"
     )
     fd = os.open(str(output), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(config_text)
     typer.echo(f"Wrote {output}. Run the service with these values as env vars, or pass --config.")

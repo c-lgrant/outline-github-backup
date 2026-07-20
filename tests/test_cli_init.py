@@ -117,3 +117,23 @@ def test_init_escapes_special_characters_in_toml(tmp_path):
     assert result.exit_code == 0, result.output
     cfg = tomllib.loads(output.read_text())
     assert cfg["OUTLINE_API_TOKEN"] == 'to"k\\en'
+
+
+@respx.mock
+def test_init_resecures_existing_config(tmp_path):
+    respx.get("https://api.github.com/repos/example/backup-data").mock(
+        return_value=httpx.Response(200, json={"private": True})
+    )
+    output = tmp_path / "config.toml"
+    # Pre-create file with world-readable permissions.
+    output.write_text("stale")
+    output.chmod(0o644)
+    # Run init with --no-create-webhook.
+    result = runner.invoke(app, init_args(tmp_path, extra=["--no-create-webhook"]))
+    assert result.exit_code == 0, result.output
+    # Verify permissions were fixed to 0o600.
+    mode = output.stat().st_mode & 0o777
+    assert mode == 0o600, oct(mode)
+    # Verify file content was replaced.
+    cfg = tomllib.loads(output.read_text())
+    assert cfg["DEST_REPO"] == "example/backup-data"
