@@ -46,5 +46,26 @@ def export(output_dir: Path, config: Path = CONFIG_OPT) -> None:
     typer.echo(f"Exported {changed} file(s) to {output_dir}.")
 
 
+@app.command()
+def restore(
+    source_dir: Path,
+    target_url: str = typer.Option(..., "--target-url"),
+    target_token: str = typer.Option(..., "--target-token"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Restore a backup tree (local clone/export) into a fresh Outline instance."""
+    from outline_backup.core.restore import restore as run_restore
+
+    report = run_restore(
+        OutlineClient(target_url, target_token), LocalDestination(source_dir), dry_run=dry_run
+    )
+    typer.echo(
+        f"Collections: {report.collections} · documents matched: {report.documents_matched}"
+        f" · comments created: {report.comments_created}"
+    )
+    for w in report.warnings:
+        typer.echo(f"warning: {w}", err=True)
+
+
 if __name__ == "__main__":
     app()
