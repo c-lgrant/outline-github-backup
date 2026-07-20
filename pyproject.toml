@@ -1,0 +1,35 @@
+[project]
+name = "outline-github-backup"
+version = "0.1.0"
+description = "Break-glass backup for Outline: webhook-driven markdown mirror to GitHub, with backfill/export/restore CLI"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "typer>=0.12",
+  "pydantic-settings>=2.3",
+]
+
+[project.scripts]
+outline-backup = "outline_backup.cli.main:app"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21", "ruff>=0.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/outline_backup"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
