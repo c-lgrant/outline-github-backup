@@ -2,6 +2,7 @@ import base64
 import json
 
 import httpx
+import pytest
 import respx
 
 from outline_backup.destinations.github import GitHubDestination
@@ -76,6 +77,13 @@ def test_list_tree_filters_prefix():
         )
     )
     assert dest().list_tree() == {"x.md": "s1"}
+
+
+def test_empty_path_prefix_rejected():
+    with pytest.raises(ValueError):
+        GitHubDestination(repo="example/backup-data", branch="main", path_prefix="", token="t")
+    with pytest.raises(ValueError):
+        GitHubDestination(repo="example/backup-data", branch="main", path_prefix="/", token="t")
 
 
 @respx.mock

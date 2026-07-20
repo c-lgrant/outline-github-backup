@@ -24,6 +24,8 @@ class GitHubDestination:
         self.repo = repo
         self.branch = branch
         self.prefix = path_prefix.strip("/")
+        if not self.prefix:
+            raise ValueError("path_prefix must be a non-empty root-level directory, e.g. 'data'")
         self._http = http or httpx.Client(timeout=30.0)
         self._base = f"{api_base}/repos/{repo}"
         self._headers = {
