@@ -25,3 +25,16 @@ def test_toml_loading(tmp_path: Path):
     s = load_settings(cfg)
     assert s.dest_repo == "example/backup-data"
     assert s.debounce_seconds == 5.0
+
+
+def test_toml_wins_over_env(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OUTLINE_URL", "https://env.example.com")
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'OUTLINE_URL = "https://toml.example.com"\n'
+        'OUTLINE_API_TOKEN = "ol_tok"\n'
+        'DEST_REPO = "example/backup-data"\n'
+        "DEBOUNCE_SECONDS = 5\n"
+    )
+    s = load_settings(cfg)
+    assert s.outline_url == "https://toml.example.com"
