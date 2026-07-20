@@ -29,6 +29,11 @@ packages = ["src/outline_backup"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+  # third-party deprecation inside starlette's testclient import, not our code
+  "ignore::DeprecationWarning:starlette.testclient",
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.ruff]
 line-length = 100
