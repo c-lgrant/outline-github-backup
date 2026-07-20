@@ -63,6 +63,9 @@ def restore(
         f"Collections: {report.collections} · documents matched: {report.documents_matched}"
         f" · comments created: {report.comments_created}"
     )
+    if dry_run:
+        for name, count in report.collection_files.items():
+            typer.echo(f"{name}: {count} document(s)")
     for w in report.warnings:
         typer.echo(f"warning: {w}", err=True)
 
