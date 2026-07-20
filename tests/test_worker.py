@@ -52,3 +52,18 @@ async def test_engine_errors_are_swallowed():
     await worker.handle_event(ev("documents.update", "d1"))
     await asyncio.sleep(0.05)
     await worker.drain()  # must not raise
+
+
+async def test_finished_tasks_are_pruned():
+    engine = MagicMock()
+    worker = DebounceWorker(engine, debounce_seconds=0.01)
+    await worker.handle_event(ev("documents.delete", "d1"))
+    await worker.handle_event(ev("documents.update", "d2"))
+    await asyncio.sleep(0.05)
+    await worker.drain()
+
+    await worker.handle_event(ev("documents.update", "d2"))
+
+    assert len(worker._immediate) == 0
+    assert worker._pending
+    assert all(not t.done() for t in worker._pending.values())

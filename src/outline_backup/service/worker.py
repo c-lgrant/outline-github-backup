@@ -18,6 +18,9 @@ class DebounceWorker:
         self._immediate: list[asyncio.Task] = []
 
     async def handle_event(self, event: dict) -> None:
+        self._immediate = [t for t in self._immediate if not t.done()]
+        self._pending = {k: t for k, t in self._pending.items() if not t.done()}
+
         name = event.get("event", "")
         payload = event.get("payload") or {}
         model_id = payload.get("id")
