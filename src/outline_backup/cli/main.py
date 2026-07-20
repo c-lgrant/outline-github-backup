@@ -70,5 +70,79 @@ def restore(
         typer.echo(f"warning: {w}", err=True)
 
 
+@app.command()
+def init(
+    outline_url: str = typer.Option(..., "--outline-url", prompt="Outline URL"),
+    outline_token: str = typer.Option(..., "--outline-token", prompt="Outline API token", hide_input=True),
+    dest_type: str = typer.Option(
+        "github",
+        "--dest-type",
+        prompt="Destination type [github; gcs/s3 coming soon]",
+        prompt_required=False,
+    ),
+    dest_repo: str = typer.Option(..., "--dest-repo", prompt="Destination GitHub repo (owner/name)"),
+    dest_branch: str = typer.Option("main", "--dest-branch"),
+    dest_path: str = typer.Option(
+        "data",
+        "--dest-path",
+        prompt="Path inside the repo (root-level dir)",
+        prompt_required=False,
+    ),
+    github_token: str = typer.Option(..., "--github-token", prompt="GitHub token", hide_input=True),
+    create_webhook: bool = typer.Option(True, "--create-webhook/--no-create-webhook"),
+    webhook_url: str = typer.Option("", "--webhook-url", help="Public base URL of this service"),
+    output: Path = typer.Option(Path("config.toml"), "--output"),
+) -> None:
+    """Interactive setup: config file, repo-visibility check, optional webhook creation."""
+    import secrets as pysecrets
+
+    import httpx as _httpx
+
+    if dest_type != "github":
+        typer.echo(f"Destination '{dest_type}' is coming soon — only 'github' is available today.", err=True)
+        raise typer.Exit(code=2)
+    if "/" in dest_path.strip("/") or not dest_path.strip("/"):
+        typer.echo("--dest-path must be a single root-level directory, e.g. 'data'.", err=True)
+        raise typer.Exit(code=2)
+    dest_path = dest_path.strip("/")
+
+    resp = _httpx.get(
+        f"https://api.github.com/repos/{dest_repo}",
+        headers={"Authorization": f"Bearer {github_token}"},
+    )
+    if resp.status_code == 200 and resp.json().get("private") is False:
+        typer.echo(
+            f"WARNING: {dest_repo} is PUBLIC — everything backed up there will be public too. "
+            "Use a private repo unless that is what you want."
+        )
+
+    secret = pysecrets.token_hex(32)
+    if create_webhook:
+        if not webhook_url:
+            typer.echo("--webhook-url is required with --create-webhook.", err=True)
+            raise typer.Exit(code=2)
+        OutlineClient(outline_url, outline_token).create_webhook(
+            name="outline-github-backup",
+            url=f"{webhook_url.rstrip('/')}/webhook",
+            secret=secret,
+            events=["documents", "collections", "comments"],
+        )
+        typer.echo("Webhook subscription created.")
+
+    output.write_text(
+        f'OUTLINE_URL = "{outline_url}"\n'
+        f'OUTLINE_API_TOKEN = "{outline_token}"\n'
+        f'OUTLINE_WEBHOOK_SECRET = "{secret}"\n'
+        f'DEST_TYPE = "{dest_type}"\n'
+        f'DEST_REPO = "{dest_repo}"\n'
+        f'DEST_BRANCH = "{dest_branch}"\n'
+        f'DEST_PATH = "{dest_path}"\n'
+        f'GITHUB_TOKEN = "{github_token}"\n'
+        "DEBOUNCE_SECONDS = 60\n"
+        "INCLUDE_ATTACHMENTS = true\n"
+    )
+    typer.echo(f"Wrote {output}. Run the service with these values as env vars, or pass --config.")
+
+
 if __name__ == "__main__":
     app()
