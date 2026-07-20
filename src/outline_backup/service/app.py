@@ -1,0 +1,64 @@
+"""FastAPI webhook receiver: verify, enqueue, ack fast."""
+
+from __future__ import annotations
+
+import json
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, Response
+
+from outline_backup.core.config import Settings, load_settings
+from outline_backup.core.signature import SignatureError, verify_signature
+from outline_backup.service.worker import DebounceWorker
+
+logger = logging.getLogger("outline_backup.service")
+
+
+def create_app(settings: Settings | None = None, worker: DebounceWorker | None = None) -> FastAPI:
+    settings = settings or load_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if app.state.worker is None:
+            from outline_backup.core.outline_client import OutlineClient
+            from outline_backup.core.sync import SyncEngine
+            from outline_backup.destinations import get_destination
+
+            client = OutlineClient(settings.outline_url, settings.outline_api_token)
+            engine = SyncEngine(client, get_destination(settings))
+            app.state.worker = DebounceWorker(engine, settings.debounce_seconds)
+        yield
+        await app.state.worker.drain()
+
+    app = FastAPI(title="outline-github-backup", lifespan=lifespan)
+    app.state.worker = worker
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    @app.post("/webhook")
+    async def webhook(request: Request) -> Response:
+        body = await request.body()
+        try:
+            verify_signature(
+                request.headers.get("Outline-Signature"), body, settings.outline_webhook_secret
+            )
+        except SignatureError as exc:
+            logger.warning("rejected webhook: %s", exc)
+            return Response(status_code=401)
+        try:
+            event = json.loads(body)
+        except json.JSONDecodeError:
+            return Response(status_code=400)
+        try:
+            await request.app.state.worker.handle_event(event)
+        except Exception:
+            logger.exception("failed to enqueue event")  # still ack: retries + backfill heal
+        return Response(content='{"ok": true}', media_type="application/json")
+
+    return app
+
+
+app = create_app()
