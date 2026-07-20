@@ -74,3 +74,46 @@ def test_init_rejects_coming_soon_destinations(tmp_path):
 def test_init_rejects_nested_dest_path(tmp_path):
     result = runner.invoke(app, init_args(tmp_path, extra=["--dest-path", "a/b"]))
     assert result.exit_code != 0
+
+
+@respx.mock
+def test_init_writes_config_owner_only(tmp_path):
+    respx.get("https://api.github.com/repos/example/backup-data").mock(
+        return_value=httpx.Response(200, json={"private": True})
+    )
+    respx.post(f"{BASE}/api/webhookSubscriptions.create").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "wh1"}})
+    )
+    output = tmp_path / "config.toml"
+    result = runner.invoke(app, init_args(tmp_path))
+    assert result.exit_code == 0, result.output
+    mode = output.stat().st_mode & 0o777
+    assert mode == 0o600, oct(mode)
+    assert "owner-readable only" in result.output
+
+
+@respx.mock
+def test_init_warns_when_repo_visibility_check_fails(tmp_path):
+    respx.get("https://api.github.com/repos/example/backup-data").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    result = runner.invoke(app, init_args(tmp_path, extra=["--no-create-webhook"]))
+    assert result.exit_code == 0, result.output
+    assert "could not verify" in result.output
+    assert "example/backup-data" in result.output
+    assert "404" in result.output
+
+
+@respx.mock
+def test_init_escapes_special_characters_in_toml(tmp_path):
+    respx.get("https://api.github.com/repos/example/backup-data").mock(
+        return_value=httpx.Response(200, json={"private": True})
+    )
+    output = tmp_path / "config.toml"
+    args = init_args(tmp_path, extra=["--no-create-webhook"])
+    # Replace the plain token with one containing TOML-breaking characters.
+    args[args.index("tok")] = 'to"k\\en'
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    cfg = tomllib.loads(output.read_text())
+    assert cfg["OUTLINE_API_TOKEN"] == 'to"k\\en'

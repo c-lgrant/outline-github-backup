@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import typer
@@ -110,10 +112,17 @@ def init(
         f"https://api.github.com/repos/{dest_repo}",
         headers={"Authorization": f"Bearer {github_token}"},
     )
-    if resp.status_code == 200 and resp.json().get("private") is False:
+    if resp.status_code == 200:
+        if resp.json().get("private") is False:
+            typer.echo(
+                f"WARNING: {dest_repo} is PUBLIC — everything backed up there will be public too. "
+                "Use a private repo unless that is what you want."
+            )
+    else:
         typer.echo(
-            f"WARNING: {dest_repo} is PUBLIC — everything backed up there will be public too. "
-            "Use a private repo unless that is what you want."
+            f"WARNING: could not verify {dest_repo} (HTTP {resp.status_code}) — "
+            "check the repo name and token.",
+            err=True,
         )
 
     secret = pysecrets.token_hex(32)
@@ -129,19 +138,23 @@ def init(
         )
         typer.echo("Webhook subscription created.")
 
-    output.write_text(
-        f'OUTLINE_URL = "{outline_url}"\n'
-        f'OUTLINE_API_TOKEN = "{outline_token}"\n'
-        f'OUTLINE_WEBHOOK_SECRET = "{secret}"\n'
-        f'DEST_TYPE = "{dest_type}"\n'
-        f'DEST_REPO = "{dest_repo}"\n'
-        f'DEST_BRANCH = "{dest_branch}"\n'
-        f'DEST_PATH = "{dest_path}"\n'
-        f'GITHUB_TOKEN = "{github_token}"\n'
+    config_text = (
+        f"OUTLINE_URL = {json.dumps(outline_url)}\n"
+        f"OUTLINE_API_TOKEN = {json.dumps(outline_token)}\n"
+        f"OUTLINE_WEBHOOK_SECRET = {json.dumps(secret)}\n"
+        f"DEST_TYPE = {json.dumps(dest_type)}\n"
+        f"DEST_REPO = {json.dumps(dest_repo)}\n"
+        f"DEST_BRANCH = {json.dumps(dest_branch)}\n"
+        f"DEST_PATH = {json.dumps(dest_path)}\n"
+        f"GITHUB_TOKEN = {json.dumps(github_token)}\n"
         "DEBOUNCE_SECONDS = 60\n"
         "INCLUDE_ATTACHMENTS = true\n"
     )
+    fd = os.open(str(output), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(config_text)
     typer.echo(f"Wrote {output}. Run the service with these values as env vars, or pass --config.")
+    typer.echo("Config contains live credentials — kept owner-readable only (0600).")
 
 
 if __name__ == "__main__":
