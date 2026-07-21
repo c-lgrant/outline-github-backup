@@ -16,7 +16,7 @@ content (documents, hierarchy, comment threads) into a fresh instance via the pu
   rebuilds each collection as a MarkdownZip, imports it, and replays comment threads
   (comments are re-created by your API user, prefixed with the original author and date).
   Pass `--dry-run` to preview the plan first — it prints the per-collection document counts
-  without importing anything.
+  without importing anything. Full step-by-step guide: [docs/restore.md](docs/restore.md).
 
 ## Quickstart
 
