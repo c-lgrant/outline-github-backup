@@ -26,25 +26,34 @@ def _settings(config: Path | None) -> Settings:
     return settings
 
 
-def _engine(settings: Settings, dest=None) -> SyncEngine:
+# Pace between documents on full-workspace walks (backfill/export) so we don't
+# hammer the Outline API and trip rate limits; single-doc syncs don't need it.
+BACKFILL_PACE_SECONDS = 0.5
+
+
+def _engine(settings: Settings, dest=None, pace_seconds: float = 0.0) -> SyncEngine:
     if dest is None:
         from outline_backup.destinations import get_destination
 
         dest = get_destination(settings)
-    return SyncEngine(OutlineClient(settings.outline_url, settings.outline_api_token), dest)
+    return SyncEngine(
+        OutlineClient(settings.outline_url, settings.outline_api_token), dest, pace_seconds=pace_seconds
+    )
 
 
 @app.command()
 def backfill(config: Path = CONFIG_OPT) -> None:
     """Walk the whole workspace and commit anything missing or changed."""
-    changed = _engine(_settings(config)).sync_all()
+    changed = _engine(_settings(config), pace_seconds=BACKFILL_PACE_SECONDS).sync_all()
     typer.echo(f"Synced {changed} changed file(s).")
 
 
 @app.command()
 def export(output_dir: Path, config: Path = CONFIG_OPT) -> None:
     """Snapshot the whole workspace to a local directory."""
-    changed = _engine(_settings(config), dest=LocalDestination(output_dir)).sync_all()
+    changed = _engine(
+        _settings(config), dest=LocalDestination(output_dir), pace_seconds=BACKFILL_PACE_SECONDS
+    ).sync_all()
     typer.echo(f"Exported {changed} file(s) to {output_dir}.")
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import respx
 
+from outline_backup.core import sync as sync_module
 from outline_backup.core.manifest import MANIFEST_PATH
 from outline_backup.core.outline_client import OutlineClient
 from outline_backup.core.sync import SyncEngine
@@ -75,6 +76,24 @@ def test_delete_document(tmp_path: Path):
     tree = dest.list_tree()
     assert "collections/guides-Ab12/intro-Xy9.md" not in tree
     assert json.loads(dest.read_file(MANIFEST_PATH))["documents"] == {}
+
+
+@respx.mock
+def test_sync_all_paces_between_documents(tmp_path: Path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(sync_module, "_sleep", sleeps.append)
+
+    dest = LocalDestination(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest, pace_seconds=0.5)
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC]})
+    )
+    mock_doc_endpoints()
+    eng.sync_all()
+    assert sleeps == [0.5]
 
 
 @respx.mock

@@ -2,6 +2,7 @@ import httpx
 import pytest
 import respx
 
+from outline_backup.core import outline_client as outline_client_module
 from outline_backup.core.outline_client import OutlineClient, OutlineError
 
 BASE = "https://wiki.example.com"
@@ -48,3 +49,31 @@ def test_create_comment_payload():
 
     sent = json.loads(route.calls.last.request.content)
     assert sent == {"documentId": "doc1", "data": {"type": "doc"}, "parentCommentId": "p1"}
+
+
+@respx.mock
+def test_429_retries_with_retry_after_header_then_succeeds(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(outline_client_module, "_sleep", sleeps.append)
+
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "3"}, json={}),
+        httpx.Response(200, json={"data": "# Title\n\nBody"}),
+    ]
+    respx.post(f"{BASE}/api/documents.export").mock(side_effect=responses)
+
+    assert client().document_export("doc1") == "# Title\n\nBody"
+    assert sleeps == [3]
+
+
+@respx.mock
+def test_429_six_consecutive_times_raises(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(outline_client_module, "_sleep", sleeps.append)
+
+    respx.post(f"{BASE}/api/documents.export").mock(return_value=httpx.Response(429, json={}))
+
+    with pytest.raises(OutlineError):
+        client().document_export("doc1")
+    # 5 retries -> 5 sleeps recorded before giving up
+    assert len(sleeps) == 5

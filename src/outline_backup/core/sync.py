@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from outline_backup.core.manifest import MANIFEST_PATH, Manifest, sidecar_for
 from outline_backup.core.outline_client import OutlineClient
@@ -11,14 +12,18 @@ from outline_backup.destinations.base import Destination, git_blob_sha
 
 logger = logging.getLogger("outline_backup.sync")
 
+# Module-level indirection so tests can monkeypatch sleeping without real delays.
+_sleep = time.sleep
+
 # Safety cap on ancestor-chain walking: guards against cycles/pathological depth.
 MAX_ANCESTOR_DEPTH = 50
 
 
 class SyncEngine:
-    def __init__(self, client: OutlineClient, dest: Destination):
+    def __init__(self, client: OutlineClient, dest: Destination, pace_seconds: float = 0.0):
         self.client = client
         self.dest = dest
+        self.pace_seconds = pace_seconds
 
     # -- helpers ----------------------------------------------------------
     def _load_manifest(self, tree: dict[str, str]) -> Manifest:
@@ -153,6 +158,7 @@ class SyncEngine:
                 files = self._doc_files(doc["id"], path)
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
+                _sleep(self.pace_seconds)
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
         if not changed and not stale:

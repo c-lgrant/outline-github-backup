@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
+
+# Module-level indirection so tests can monkeypatch sleeping without real delays.
+_sleep = time.sleep
+
+MAX_429_RETRIES = 5
+MAX_RETRY_AFTER_SECONDS = 60
+# Exponential backoff used when the server doesn't send a Retry-After header.
+_BACKOFF_SECONDS = [2, 4, 8, 16, 32]
 
 
 class OutlineError(Exception):
@@ -16,7 +26,23 @@ class OutlineClient:
         self._headers = {"Authorization": f"Bearer {api_token}"}
 
     def _post(self, endpoint: str, **payload) -> dict:
-        resp = self._http.post(f"{self._base}/api/{endpoint}", json=payload, headers=self._headers)
+        resp = None
+        # 1 initial attempt + up to MAX_429_RETRIES retries, only for 429 responses.
+        for attempt in range(MAX_429_RETRIES + 1):
+            resp = self._http.post(f"{self._base}/api/{endpoint}", json=payload, headers=self._headers)
+            if resp.status_code != 429:
+                break
+            if attempt == MAX_429_RETRIES:
+                raise OutlineError(f"{endpoint} failed: HTTP 429 rate_limit_exceeded")
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after is not None:
+                try:
+                    delay: float = min(float(retry_after), MAX_RETRY_AFTER_SECONDS)
+                except ValueError:
+                    delay = _BACKOFF_SECONDS[attempt]
+            else:
+                delay = _BACKOFF_SECONDS[attempt]
+            _sleep(delay)
         if resp.status_code != 200:
             raise OutlineError(f"{endpoint} failed: HTTP {resp.status_code}: {resp.text[:200]}")
         return resp.json()
