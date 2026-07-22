@@ -123,9 +123,11 @@ class SyncEngine:
         stale = self._stale_for(tree, old_path, path, files)
 
         changed = self._changed(files, tree)
-        if not changed and not stale:
+        manifest_bytes = manifest.to_bytes()
+        manifest_changed = tree.get(MANIFEST_PATH) != git_blob_sha(manifest_bytes)
+        if not changed and not stale and not manifest_changed:
             return False
-        changed[MANIFEST_PATH] = manifest.to_bytes()
+        changed[MANIFEST_PATH] = manifest_bytes
         msg = message or f'backup: sync "{doc.get("title", doc_id)}"'
         if stale:
             self.dest.delete_files(stale, msg)
@@ -161,9 +163,11 @@ class SyncEngine:
                 _sleep(self.pace_seconds)
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
-        if not changed and not stale:
+        manifest_bytes = manifest.to_bytes()
+        manifest_changed = tree.get(MANIFEST_PATH) != git_blob_sha(manifest_bytes)
+        if not changed and not stale and not manifest_changed:
             return 0
-        changed[MANIFEST_PATH] = manifest.to_bytes()
+        changed[MANIFEST_PATH] = manifest_bytes
         if stale:
             self.dest.delete_files(stale, message)
         self.dest.write_files(changed, message)

@@ -16,6 +16,9 @@ class DebounceWorker:
         self.debounce_seconds = debounce_seconds
         self._pending: dict[str, asyncio.Task] = {}
         self._immediate: list[asyncio.Task] = []
+        # Sync jobs read-modify-write the shared manifest in the destination;
+        # two running at once lose whichever update lands first.
+        self._run_lock = asyncio.Lock()
 
     async def handle_event(self, event: dict) -> None:
         self._immediate = [t for t in self._immediate if not t.done()]
@@ -54,10 +57,11 @@ class DebounceWorker:
         await self._run(job)
 
     async def _run(self, fn, *args) -> None:
-        try:
-            await asyncio.to_thread(fn, *args)
-        except Exception:
-            logger.exception("sync job failed")
+        async with self._run_lock:
+            try:
+                await asyncio.to_thread(fn, *args)
+            except Exception:
+                logger.exception("sync job failed")
 
     async def drain(self) -> None:
         tasks = [t for t in [*self._pending.values(), *self._immediate] if not t.done()]

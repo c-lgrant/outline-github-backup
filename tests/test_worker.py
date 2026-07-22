@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import MagicMock
 
 from outline_backup.service.worker import DebounceWorker
@@ -52,6 +53,30 @@ async def test_engine_errors_are_swallowed():
     await worker.handle_event(ev("documents.update", "d1"))
     await asyncio.sleep(0.05)
     await worker.drain()  # must not raise
+
+
+async def test_jobs_for_different_documents_never_overlap():
+    running = 0
+    max_running = 0
+
+    def sync_document(doc_id, message=None):
+        nonlocal running, max_running
+        running += 1
+        max_running = max(max_running, running)
+        time.sleep(0.05)
+        running -= 1
+
+    engine = MagicMock()
+    engine.sync_document.side_effect = sync_document
+    worker = DebounceWorker(engine, debounce_seconds=0.01)
+    await worker.handle_event(ev("documents.update", "d1"))
+    await worker.handle_event(ev("documents.update", "d2"))
+    await worker.handle_event(ev("documents.update", "d3"))
+    await asyncio.sleep(0.05)
+    await worker.drain()
+
+    assert engine.sync_document.call_count == 3
+    assert max_running == 1
 
 
 async def test_finished_tasks_are_pruned():

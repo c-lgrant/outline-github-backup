@@ -112,6 +112,47 @@ def test_sync_all_batches(tmp_path: Path):
 
 
 @respx.mock
+def test_sync_all_heals_manifest_only_drift(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC]})
+    )
+    mock_doc_endpoints()
+    eng.sync_all()
+
+    # Simulate a lost manifest update: the .md file is intact but the entry is gone.
+    manifest = json.loads(dest.read_file(MANIFEST_PATH))
+    del manifest["documents"]["doc1"]
+    dest.write_files(
+        {MANIFEST_PATH: (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()},
+        "clobber",
+    )
+
+    assert eng.sync_all() == 1  # manifest re-committed even though no files changed
+    assert "doc1" in json.loads(dest.read_file(MANIFEST_PATH))["documents"]
+
+
+@respx.mock
+def test_sync_document_heals_manifest_only_drift(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    mock_doc_endpoints()
+    eng.sync_document("doc1")
+
+    manifest = json.loads(dest.read_file(MANIFEST_PATH))
+    del manifest["documents"]["doc1"]
+    dest.write_files(
+        {MANIFEST_PATH: (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()},
+        "clobber",
+    )
+
+    assert eng.sync_document("doc1") is True
+    assert "doc1" in json.loads(dest.read_file(MANIFEST_PATH))["documents"]
+
+
+@respx.mock
 def test_delete_unknown_document_returns_false_and_is_noop(tmp_path: Path):
     eng, dest = engine(tmp_path)
     mock_doc_endpoints()
