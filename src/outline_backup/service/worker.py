@@ -30,6 +30,11 @@ class DebounceWorker:
         model = payload.get("model") or {}
 
         if name in ("documents.delete", "documents.archive") and model_id:
+            # A sync queued by an earlier create/update event would fire after
+            # this removal and resurrect the doc in the mirror — cancel it.
+            pending = self._pending.pop(model_id, None)
+            if pending and not pending.done():
+                pending.cancel()
             self._immediate.append(
                 asyncio.create_task(self._run(self.engine.delete_document, model_id, f"backup: {name}"))
             )

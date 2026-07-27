@@ -79,6 +79,42 @@ def test_delete_document(tmp_path: Path):
 
 
 @respx.mock
+def test_sync_document_removes_archived_doc(tmp_path: Path):
+    # documents.info happily returns archived docs; a sync job that lands
+    # after an archive (event races, webhook retries) must remove the mirror
+    # copy, not resurrect it
+    eng, dest = engine(tmp_path)
+    mock_doc_endpoints()
+    eng.sync_document("doc1")
+    archived = dict(DOC, archivedAt="2026-01-03T00:00:00Z", updatedAt="2026-01-03T00:00:00Z")
+    mock_doc_endpoints(doc=archived)
+    assert eng.sync_document("doc1") is True
+    tree = dest.list_tree()
+    assert "collections/guides-Ab12/intro-Xy9.md" not in tree
+    assert json.loads(dest.read_file(MANIFEST_PATH))["documents"] == {}
+
+
+@respx.mock
+def test_sync_document_skips_never_mirrored_archived_doc(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    archived = dict(DOC, archivedAt="2026-01-03T00:00:00Z")
+    mock_doc_endpoints(doc=archived)
+    assert eng.sync_document("doc1") is False
+    assert dest.list_tree() == {}
+
+
+@respx.mock
+def test_sync_document_removes_trashed_doc(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    mock_doc_endpoints()
+    eng.sync_document("doc1")
+    trashed = dict(DOC, deletedAt="2026-01-03T00:00:00Z")
+    mock_doc_endpoints(doc=trashed)
+    assert eng.sync_document("doc1") is True
+    assert "collections/guides-Ab12/intro-Xy9.md" not in dest.list_tree()
+
+
+@respx.mock
 def test_sync_all_paces_between_documents(tmp_path: Path, monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr(sync_module, "_sleep", sleeps.append)

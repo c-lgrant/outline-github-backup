@@ -28,6 +28,30 @@ async def test_delete_is_immediate():
     engine.delete_document.assert_called_once()
 
 
+async def test_archive_cancels_pending_sync_for_same_document():
+    # create → archive inside the debounce window: the immediate removal must
+    # also cancel the queued sync, or the stale job re-mirrors the archived doc
+    engine = MagicMock()
+    worker = DebounceWorker(engine, debounce_seconds=0.05)
+    await worker.handle_event(ev("documents.publish", "d1"))
+    await worker.handle_event(ev("documents.archive", "d1"))
+    await asyncio.sleep(0.15)
+    await worker.drain()
+    engine.delete_document.assert_called_once()
+    engine.sync_document.assert_not_called()
+
+
+async def test_delete_cancels_pending_sync_for_same_document():
+    engine = MagicMock()
+    worker = DebounceWorker(engine, debounce_seconds=0.05)
+    await worker.handle_event(ev("documents.update", "d1"))
+    await worker.handle_event(ev("documents.delete", "d1"))
+    await asyncio.sleep(0.15)
+    await worker.drain()
+    engine.delete_document.assert_called_once()
+    engine.sync_document.assert_not_called()
+
+
 async def test_comment_event_targets_parent_document():
     engine = MagicMock()
     worker = DebounceWorker(engine, debounce_seconds=0.05)

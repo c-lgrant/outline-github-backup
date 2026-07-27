@@ -114,6 +114,12 @@ class SyncEngine:
     # -- public API -------------------------------------------------------
     def sync_document(self, doc_id: str, message: str | None = None) -> bool:
         doc = self.client.document_info(doc_id)
+        # documents.info returns archived/trashed docs; mirroring one would
+        # resurrect it after a missed or out-of-order archive/delete event.
+        if doc.get("archivedAt") or doc.get("deletedAt"):
+            return self.delete_document(
+                doc_id, message or f'backup: remove archived "{doc.get("title", doc_id)}"'
+            )
         tree = self.dest.list_tree()
         manifest = self._load_manifest(tree)
         old_path = manifest.path_for(doc_id)
