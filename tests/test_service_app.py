@@ -63,6 +63,5 @@ def test_bad_json_400():
 
 def test_startup_refuses_empty_webhook_secret():
     app = create_app(Settings())
-    with pytest.raises(RuntimeError, match="OUTLINE_WEBHOOK_SECRET is required"):
-        with TestClient(app):
-            pass
+    with pytest.raises(RuntimeError, match="OUTLINE_WEBHOOK_SECRET is required"), TestClient(app):
+        pass

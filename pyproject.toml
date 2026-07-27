@@ -17,7 +17,7 @@ dependencies = [
 outline-backup = "outline_backup.cli.main:app"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21", "ruff>=0.5"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21", "ruff==0.16.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -38,3 +38,7 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer's declarative CLI style puts these calls in argument defaults by design
+extend-immutable-calls = ["typer.Option", "typer.Argument", "pathlib.Path"]

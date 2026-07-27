@@ -146,7 +146,7 @@ def restore(
         by_title = {d["title"]: d["id"] for d in imported_docs}
         title_counts = Counter(d["title"] for d in imported_docs)
 
-        for doc_id, member_path in members.items():
+        for doc_id in members:
             entry = manifest.documents[doc_id]
             title = entry["title"]
             new_doc_id = by_title.get(title)
@@ -188,6 +188,6 @@ def _replay_comments(
             new = client.create_comment(new_doc_id, data, parent_comment_id=parent)
             id_map[c["id"]] = new["id"]
             created += 1
-        except Exception as exc:  # keep going: one bad comment shouldn't sink the restore
+        except Exception as exc:  # noqa: BLE001 — keep going: one bad comment shouldn't sink the restore
             report.warnings.append(f"comment {c['id']} failed: {exc}")
     return created
