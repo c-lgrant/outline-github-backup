@@ -8,7 +8,7 @@ import time
 from outline_backup.core.manifest import MANIFEST_PATH, Manifest, sidecar_for
 from outline_backup.core.outline_client import OutlineClient
 from outline_backup.core.serialize import comments_sidecar, doc_slug, slugify
-from outline_backup.destinations.base import Destination, git_blob_sha
+from outline_backup.destinations.base import Destination, DestinationConflictError, git_blob_sha
 
 logger = logging.getLogger("outline_backup.sync")
 
@@ -17,6 +17,10 @@ _sleep = time.sleep
 
 # Safety cap on ancestor-chain walking: guards against cycles/pathological depth.
 MAX_ANCESTOR_DEPTH = 50
+
+# Attempts per operation when the destination moves underneath us; each retry
+# recomputes from a fresh tree + manifest rather than resubmitting stale state.
+MAX_CONFLICT_ATTEMPTS = 3
 
 
 class SyncEngine:
@@ -111,13 +115,34 @@ class SyncEngine:
     def _changed(files: dict[str, bytes], tree: dict[str, str]) -> dict[str, bytes]:
         return {p: data for p, data in files.items() if tree.get(p) != git_blob_sha(data)}
 
+    def _retry_conflicts(self, op):
+        for attempt in range(1, MAX_CONFLICT_ATTEMPTS + 1):
+            try:
+                return op()
+            except DestinationConflictError:
+                if attempt == MAX_CONFLICT_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "destination moved during commit; recomputing from fresh state "
+                    "(attempt %d/%d)", attempt + 1, MAX_CONFLICT_ATTEMPTS,
+                )
+
     # -- public API -------------------------------------------------------
     def sync_document(self, doc_id: str, message: str | None = None) -> bool:
+        return self._retry_conflicts(lambda: self._sync_document_once(doc_id, message))
+
+    def delete_document(self, doc_id: str, message: str | None = None) -> bool:
+        return self._retry_conflicts(lambda: self._delete_document_once(doc_id, message))
+
+    def sync_all(self, message: str = "backup: full sync") -> int:
+        return self._retry_conflicts(lambda: self._sync_all_once(message))
+
+    def _sync_document_once(self, doc_id: str, message: str | None = None) -> bool:
         doc = self.client.document_info(doc_id)
         # documents.info returns archived/trashed docs; mirroring one would
         # resurrect it after a missed or out-of-order archive/delete event.
         if doc.get("archivedAt") or doc.get("deletedAt"):
-            return self.delete_document(
+            return self._delete_document_once(
                 doc_id, message or f'backup: remove archived "{doc.get("title", doc_id)}"'
             )
         tree = self.dest.list_tree()
@@ -135,12 +160,10 @@ class SyncEngine:
             return False
         changed[MANIFEST_PATH] = manifest_bytes
         msg = message or f'backup: sync "{doc.get("title", doc_id)}"'
-        if stale:
-            self.dest.delete_files(stale, msg)
-        self.dest.write_files(changed, msg)
+        self.dest.write_files(changed, msg, deletions=stale)
         return True
 
-    def delete_document(self, doc_id: str, message: str | None = None) -> bool:
+    def _delete_document_once(self, doc_id: str, message: str | None = None) -> bool:
         tree = self.dest.list_tree()
         manifest = self._load_manifest(tree)
         existing_path = manifest.path_for(doc_id)
@@ -148,12 +171,10 @@ class SyncEngine:
             return False
         paths = [p for p in manifest.remove_document(doc_id) if p in tree]
         msg = message or f"backup: delete document {doc_id}"
-        if paths:
-            self.dest.delete_files(paths, msg)
-        self.dest.write_files({MANIFEST_PATH: manifest.to_bytes()}, msg)
+        self.dest.write_files({MANIFEST_PATH: manifest.to_bytes()}, msg, deletions=paths)
         return True
 
-    def sync_all(self, message: str = "backup: full sync") -> int:
+    def _sync_all_once(self, message: str = "backup: full sync") -> int:
         tree = self.dest.list_tree()
         manifest = self._load_manifest(tree)
         pending: dict[str, bytes] = {}
@@ -174,7 +195,5 @@ class SyncEngine:
         if not changed and not stale and not manifest_changed:
             return 0
         changed[MANIFEST_PATH] = manifest_bytes
-        if stale:
-            self.dest.delete_files(stale, message)
-        self.dest.write_files(changed, message)
+        self.dest.write_files(changed, message, deletions=stale)
         return len(changed)

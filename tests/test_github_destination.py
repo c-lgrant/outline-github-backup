@@ -5,6 +5,7 @@ import httpx
 import pytest
 import respx
 
+from outline_backup.destinations.base import DestinationConflictError
 from outline_backup.destinations.github import GitHubDestination
 
 API = "https://api.github.com/repos/example/backup-data"
@@ -41,21 +42,64 @@ def test_write_files_single_commit_with_prefix():
 
 
 @respx.mock
-def test_write_retries_on_ref_race():
+def test_ref_race_raises_conflict_not_silent_retry():
     mock_write_flow()
-    respx.patch(f"{API}/git/refs/heads/main").mock(
-        side_effect=[httpx.Response(422, json={}), httpx.Response(200, json={})]
-    )
-    dest().write_files({"x.md": b"one"}, "msg")  # should not raise
+    respx.patch(f"{API}/git/refs/heads/main").mock(return_value=httpx.Response(422, json={}))
+    with pytest.raises(DestinationConflictError):
+        dest().write_files({"x.md": b"one"}, "msg")
 
 
 @respx.mock
-def test_delete_files_uses_null_sha():
+def test_deletions_ride_in_same_commit_as_writes():
+    tree_post = mock_write_flow()
+    ref_patch = respx.patch(f"{API}/git/refs/heads/main").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    dest().write_files({"new.md": b"moved"}, "backup: rename", deletions=["old.md"])
+    assert tree_post.call_count == 1 and ref_patch.call_count == 1
+    entries = {e["path"]: e["sha"] for e in json.loads(tree_post.calls.last.request.content)["tree"]}
+    assert entries["data/old.md"] is None
+    assert entries["data/new.md"] == "b1"
+
+
+@respx.mock
+def test_deletion_only_write_commits_null_shas():
     tree_post = mock_write_flow()
     respx.patch(f"{API}/git/refs/heads/main").mock(return_value=httpx.Response(200, json={}))
-    dest().delete_files(["x.md"], "chore: remove")
+    dest().write_files({}, "chore: remove", deletions=["x.md"])
     entry = json.loads(tree_post.calls.last.request.content)["tree"][0]
     assert entry["path"] == "data/x.md" and entry["sha"] is None
+
+
+@respx.mock
+def test_write_commits_against_head_seen_at_list_tree():
+    # list_tree observes head c-base; another writer then moves the ref to
+    # c-other. The commit must still parent on c-base so the ref update
+    # fails non-fast-forward instead of silently building on the other
+    # writer's manifest with our stale blob.
+    d = dest()
+    respx.get(f"{API}/git/ref/heads/main").mock(
+        side_effect=[
+            httpx.Response(200, json={"object": {"sha": "c-base"}}),
+            httpx.Response(200, json={"object": {"sha": "c-other"}}),
+        ]
+    )
+    respx.get(f"{API}/git/commits/c-base").mock(
+        return_value=httpx.Response(200, json={"tree": {"sha": "t-base"}})
+    )
+    respx.get(f"{API}/git/trees/t-base").mock(
+        return_value=httpx.Response(200, json={"tree": []})
+    )
+    respx.post(f"{API}/git/blobs").mock(return_value=httpx.Response(201, json={"sha": "b1"}))
+    respx.post(f"{API}/git/trees").mock(return_value=httpx.Response(201, json={"sha": "t-new"}))
+    commit_post = respx.post(f"{API}/git/commits").mock(
+        return_value=httpx.Response(201, json={"sha": "c-new"})
+    )
+    respx.patch(f"{API}/git/refs/heads/main").mock(return_value=httpx.Response(200, json={}))
+
+    d.list_tree()
+    d.write_files({"x.md": b"one"}, "msg")
+    assert json.loads(commit_post.calls.last.request.content)["parents"] == ["c-base"]
 
 
 @respx.mock

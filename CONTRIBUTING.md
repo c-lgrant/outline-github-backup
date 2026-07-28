@@ -8,7 +8,7 @@ Thanks for helping! Dev setup:
 ## Adding a destination (GCS, S3, …)
 
 Destinations implement the small protocol in `src/outline_backup/destinations/base.py`
-(`write_files` / `delete_files` / `list_tree` / `read_file`) and register in
+(`write_files` — deletions included, one atomic commit — / `list_tree` / `read_file`) and register in
 `src/outline_backup/destinations/__init__.py`. `LocalDestination` is the reference
 implementation; `GitHubDestination` shows a remote one. Please include tests
 (see `tests/test_github_destination.py` for the mocking pattern).

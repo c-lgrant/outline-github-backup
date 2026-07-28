@@ -20,8 +20,8 @@ def test_local_destination_roundtrip(tmp_path: Path):
     assert set(tree) == {"a/b.md", "c.json"}
     assert tree["a/b.md"] == git_blob_sha(b"# hi\n")
     assert dest.read_file("c.json") == b"[]\n"
-    dest.delete_files(["c.json"], "msg")
-    assert set(dest.list_tree()) == {"a/b.md"}
+    dest.write_files({"a/d.md": b"new\n"}, "msg", deletions=["c.json"])
+    assert set(dest.list_tree()) == {"a/b.md", "a/d.md"}
 
 
 def test_registry_coming_soon():
