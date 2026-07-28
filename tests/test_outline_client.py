@@ -77,3 +77,35 @@ def test_429_six_consecutive_times_raises(monkeypatch):
         client().document_export("doc1")
     # 5 retries -> 5 sleeps recorded before giving up
     assert len(sleeps) == 5
+
+
+@respx.mock
+def test_max_429_retries_is_configurable(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(outline_client_module, "_sleep", sleeps.append)
+    respx.post(f"{BASE}/api/documents.info").mock(return_value=httpx.Response(429, json={}))
+    with pytest.raises(OutlineError):
+        OutlineClient(BASE, "tok", max_429_retries=1).document_info("doc1")
+    assert len(sleeps) == 1
+
+
+@respx.mock
+def test_retry_after_cap_is_configurable(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(outline_client_module, "_sleep", sleeps.append)
+    respx.post(f"{BASE}/api/documents.info").mock(side_effect=[
+        httpx.Response(429, headers={"Retry-After": "500"}, json={}),
+        httpx.Response(200, json={"data": {"id": "doc1"}}),
+    ])
+    OutlineClient(BASE, "tok", max_retry_after_seconds=5).document_info("doc1")
+    assert sleeps == [5]
+
+
+@respx.mock
+def test_retries_beyond_backoff_table_reuse_last_delay(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(outline_client_module, "_sleep", sleeps.append)
+    respx.post(f"{BASE}/api/documents.info").mock(return_value=httpx.Response(429, json={}))
+    with pytest.raises(OutlineError):
+        OutlineClient(BASE, "tok", max_429_retries=7).document_info("doc1")
+    assert len(sleeps) == 7 and sleeps[-1] == 32

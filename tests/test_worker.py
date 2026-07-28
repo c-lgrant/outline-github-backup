@@ -116,3 +116,16 @@ async def test_finished_tasks_are_pruned():
     assert len(worker._immediate) == 0
     assert worker._pending
     assert all(not t.done() for t in worker._pending.values())
+
+
+async def test_run_full_sync_calls_engine():
+    class Eng:
+        def __init__(self):
+            self.calls = []
+
+        def sync_all(self, message):
+            self.calls.append(message)
+
+    w = DebounceWorker(Eng(), 0)
+    await w.run_full_sync("backup: backfill on start")
+    assert w.engine.calls == ["backup: backfill on start"]

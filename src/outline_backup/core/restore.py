@@ -120,13 +120,22 @@ def restore(
     *,
     dry_run: bool = False,
     upload=None,
+    collections: list[str] | None = None,
 ) -> RestoreReport:
     upload = upload or _default_upload
     report = RestoreReport()
     manifest = Manifest.from_bytes(source.read_file(MANIFEST_PATH))
     tree = source.list_tree()
 
+    if collections is not None:
+        known = {c["name"] for c in manifest.collections.values()}
+        for name in collections:
+            if name not in known:
+                report.warnings.append(f"no such collection in backup: {name}")
+
     for col_id, col in manifest.collections.items():
+        if collections is not None and col["name"] not in collections:
+            continue
         report.collections += 1
         members = _zip_members(manifest, col_id)
         report.collection_files[col["name"]] = len(members)

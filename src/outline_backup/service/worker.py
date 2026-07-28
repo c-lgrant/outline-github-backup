@@ -61,6 +61,10 @@ class DebounceWorker:
             return
         await self._run(job)
 
+    async def run_full_sync(self, message: str = "backup: full sync") -> None:
+        """Run a full workspace sync, serialized with webhook jobs."""
+        await self._run(self.engine.sync_all, message)
+
     async def _run(self, fn, *args) -> None:
         async with self._run_lock:
             try:

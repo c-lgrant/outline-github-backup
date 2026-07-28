@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -32,7 +33,14 @@ def create_app(settings: Settings | None = None, worker: DebounceWorker | None =
             client = OutlineClient(settings.outline_url, settings.outline_api_token)
             engine = SyncEngine(client, get_destination(settings))
             app.state.worker = DebounceWorker(engine, settings.debounce_seconds)
+        backfill_task: asyncio.Task | None = None
+        if settings.backfill_on_start:
+            backfill_task = asyncio.create_task(
+                app.state.worker.run_full_sync("backup: backfill on start")
+            )
         yield
+        if backfill_task is not None:
+            await backfill_task
         await app.state.worker.drain()
 
     app = FastAPI(title="outline-github-backup", lifespan=lifespan)

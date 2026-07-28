@@ -134,8 +134,8 @@ class SyncEngine:
     def delete_document(self, doc_id: str, message: str | None = None) -> bool:
         return self._retry_conflicts(lambda: self._delete_document_once(doc_id, message))
 
-    def sync_all(self, message: str = "backup: full sync") -> int:
-        return self._retry_conflicts(lambda: self._sync_all_once(message))
+    def sync_all(self, message: str = "backup: full sync", prune: bool = False) -> int:
+        return self._retry_conflicts(lambda: self._sync_all_once(message, prune))
 
     def _sync_document_once(self, doc_id: str, message: str | None = None) -> bool:
         doc = self.client.document_info(doc_id)
@@ -174,20 +174,26 @@ class SyncEngine:
         self.dest.write_files({MANIFEST_PATH: manifest.to_bytes()}, msg, deletions=paths)
         return True
 
-    def _sync_all_once(self, message: str = "backup: full sync") -> int:
+    def _sync_all_once(self, message: str = "backup: full sync", prune: bool = False) -> int:
         tree = self.dest.list_tree()
         manifest = self._load_manifest(tree)
         pending: dict[str, bytes] = {}
         stale: list[str] = []
+        seen: set[str] = set()
         for col in self.client.list_collections():
             self._collection_slug(manifest, col["id"], col)
             for doc in self.client.list_documents(col["id"]):
+                seen.add(doc["id"])
                 old_path = manifest.path_for(doc["id"])
                 path = self._upsert_document(manifest, doc)
                 files = self._doc_files(doc["id"], path)
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
                 _sleep(self.pace_seconds)
+        if prune:
+            for doc_id in [d for d in manifest.documents if d not in seen]:
+                logger.info("pruning upstream-deleted document %s", doc_id)
+                stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
         manifest_bytes = manifest.to_bytes()

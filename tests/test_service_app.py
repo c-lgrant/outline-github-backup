@@ -15,9 +15,13 @@ SECRET = "whsec_test"
 class FakeWorker:
     def __init__(self):
         self.events = []
+        self.full_syncs = []
 
     async def handle_event(self, event):
         self.events.append(event)
+
+    async def run_full_sync(self, message):
+        self.full_syncs.append(message)
 
     async def drain(self):
         pass
@@ -59,6 +63,21 @@ def test_bad_json_400():
     client, _ = make_client()
     body = b"not json"
     assert client.post("/webhook", content=body, headers=signed(body)).status_code == 400
+
+
+def test_backfill_on_start_kicks_full_sync():
+    worker = FakeWorker()
+    app = create_app(Settings(outline_webhook_secret=SECRET, backfill_on_start=True), worker=worker)
+    with TestClient(app):
+        pass
+    assert worker.full_syncs == ["backup: backfill on start"]
+
+
+def test_backfill_on_start_defaults_off():
+    client, worker = make_client()
+    with client:
+        pass
+    assert worker.full_syncs == []
 
 
 def test_startup_refuses_empty_webhook_secret():

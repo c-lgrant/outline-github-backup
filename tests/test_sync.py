@@ -340,6 +340,44 @@ def test_conflict_retry_gives_up_eventually(tmp_path: Path):
 
 
 @respx.mock
+def test_sync_all_prune_removes_upstream_deleted(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    docs_route = respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC]})
+    )
+    mock_doc_endpoints()
+    eng.sync_all()
+    assert "collections/guides-Ab12/intro-Xy9.md" in dest.list_tree()
+
+    docs_route.mock(return_value=httpx.Response(200, json={"data": []}))
+    eng.sync_all(prune=True)
+    tree = dest.list_tree()
+    assert "collections/guides-Ab12/intro-Xy9.md" not in tree
+    assert "collections/guides-Ab12/intro-Xy9.comments.json" not in tree
+    assert json.loads(dest.read_file(MANIFEST_PATH))["documents"] == {}
+
+
+@respx.mock
+def test_sync_all_without_prune_keeps_upstream_deleted(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    docs_route = respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC]})
+    )
+    mock_doc_endpoints()
+    eng.sync_all()
+
+    docs_route.mock(return_value=httpx.Response(200, json={"data": []}))
+    assert eng.sync_all() == 0
+    assert "collections/guides-Ab12/intro-Xy9.md" in dest.list_tree()
+
+
+@respx.mock
 def test_sync_document_cycle_guard_avoids_recursion_error(tmp_path: Path):
     eng, dest = engine(tmp_path)
     doc = dict(DOC, parentDocumentId="parent1")
