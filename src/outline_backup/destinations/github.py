@@ -93,9 +93,16 @@ class GitHubDestination:
 
     def list_tree(self) -> dict[str, str]:
         _, tree_sha = self._head()
-        items = self._req(
+        listing = self._req(
             "GET", f"{self._base}/git/trees/{tree_sha}", params={"recursive": "1"}
-        ).json()["tree"]
+        ).json()
+        if listing.get("truncated"):
+            raise GitHubDestinationError(
+                "recursive tree listing was truncated by the GitHub API; "
+                "refusing to diff against an incomplete tree (mirror too large "
+                "for a single listing — split it across repos or path prefixes)"
+            )
+        items = listing["tree"]
         prefix = f"{self.prefix}/"
         return {
             item["path"].removeprefix(prefix): item["sha"]
