@@ -44,7 +44,8 @@ signing secret, subscribed to document, collection, and comment events.
 | `DEST_PATH` | `data` | Root-level directory the backup lives under |
 | `GITHUB_TOKEN` | — | Fine-grained PAT, contents read/write on the data repo only |
 | `DEBOUNCE_SECONDS` | `60` | Per-document quiet period before committing |
-| `INCLUDE_ATTACHMENTS` | `true` | Reserved: attachment mirroring is not yet implemented (planned) |
+| `INCLUDE_ATTACHMENTS` | `true` | Mirror files/images referenced by documents under `attachments/` |
+| `MAX_ATTACHMENT_BYTES` | `50000000` | Attachments larger than this are skipped with a warning |
 | `BACKFILL_ON_START` | `false` | Run a full workspace sync when the service starts, catching up on webhooks missed while it was down |
 | `MAX_429_RETRIES` | `5` | Retries per Outline API call on HTTP 429 |
 | `MAX_RETRY_AFTER_SECONDS` | `60` | Cap on a `Retry-After` sleep |
@@ -60,8 +61,11 @@ provider-independent content layer.
 
 ## Roadmap & known limitations
 
-- Attachment mirroring (`INCLUDE_ATTACHMENTS`) — planned. Markdown text and comments are
-  mirrored; embedded images/files are not yet downloaded.
+- Attachments are mirrored byte-faithfully: markdown keeps the original
+  `/api/attachments.redirect?id=…` links and the file bodies live under `attachments/<id>`.
+  Restore relativizes the links and bundles the files into the import zip. Attachments are
+  immutable in Outline, so they are downloaded once and never re-fetched; orphaned ones are
+  removed by `backfill --prune`.
 - `backfill` only adds and updates documents by default. Pass `--prune` to also remove
   documents that were deleted upstream — useful to fully reconcile after missed webhooks.
   (Live deletions are handled by the webhook path either way.)

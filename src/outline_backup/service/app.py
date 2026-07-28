@@ -30,8 +30,18 @@ def create_app(settings: Settings | None = None, worker: DebounceWorker | None =
             from outline_backup.core.sync import SyncEngine
             from outline_backup.destinations import get_destination
 
-            client = OutlineClient(settings.outline_url, settings.outline_api_token)
-            engine = SyncEngine(client, get_destination(settings))
+            client = OutlineClient(
+                settings.outline_url,
+                settings.outline_api_token,
+                max_429_retries=settings.max_429_retries,
+                max_retry_after_seconds=settings.max_retry_after_seconds,
+            )
+            engine = SyncEngine(
+                client,
+                get_destination(settings),
+                include_attachments=settings.include_attachments,
+                max_attachment_bytes=settings.max_attachment_bytes,
+            )
             app.state.worker = DebounceWorker(engine, settings.debounce_seconds)
         backfill_task: asyncio.Task | None = None
         if settings.backfill_on_start:

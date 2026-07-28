@@ -92,6 +92,20 @@ class OutlineClient:
             payload["parentCommentId"] = parent_comment_id
         return self._post("comments.create", **payload)["data"]
 
+    def download_attachment(self, attachment_id: str) -> bytes:
+        # attachments.redirect 302s to a signed URL. httpx keeps the auth
+        # header on same-origin redirects (local storage) and strips it on
+        # cross-origin ones (S3-style), which is exactly what we want.
+        resp = self._http.get(
+            f"{self._base}/api/attachments.redirect",
+            params={"id": attachment_id},
+            headers=self._headers,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            raise OutlineError(f"attachments.redirect failed: HTTP {resp.status_code}")
+        return resp.content
+
     # -- webhooks / import / file operations -----------------------------
     def create_webhook(self, name: str, url: str, secret: str, events: list[str]) -> dict:
         return self._post("webhookSubscriptions.create", name=name, url=url, secret=secret, events=events)["data"]

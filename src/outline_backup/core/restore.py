@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from outline_backup.core.attachments import attachment_path, find_attachment_ids, rewrite_for_zip
 from outline_backup.core.manifest import MANIFEST_PATH, Manifest, sidecar_for
 from outline_backup.core.outline_client import OutlineClient
 from outline_backup.destinations.base import Destination
@@ -72,12 +73,22 @@ def _zip_members(manifest: Manifest, collection_id: str) -> dict[str, str]:
     return members
 
 
-def build_markdown_zip(manifest: Manifest, read_file, collection_id: str) -> bytes:
+def build_markdown_zip(
+    manifest: Manifest, read_file, collection_id: str, tree: dict[str, str] | None = None
+) -> bytes:
     members = _zip_members(manifest, collection_id)
     buf = io.BytesIO()
+    bundled: set[str] = set()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for doc_id, member_path in sorted(members.items(), key=lambda kv: kv[1]):
-            zf.writestr(member_path, read_file(manifest.documents[doc_id]["path"]))
+            markdown = read_file(manifest.documents[doc_id]["path"]).decode()
+            zf.writestr(member_path, rewrite_for_zip(markdown))
+            for att_id in find_attachment_ids(markdown):
+                att_path = attachment_path(att_id)
+                if att_path in bundled or tree is None or att_path not in tree:
+                    continue
+                bundled.add(att_path)
+                zf.writestr(att_path, read_file(att_path))
     return buf.getvalue()
 
 
@@ -141,7 +152,7 @@ def restore(
         report.collection_files[col["name"]] = len(members)
         if dry_run:
             continue
-        blob = build_markdown_zip(manifest, source.read_file, col_id)
+        blob = build_markdown_zip(manifest, source.read_file, col_id, tree=tree)
         att = client.create_import_attachment(f"{col['slug']}.zip", len(blob))
         upload(att["uploadUrl"], att.get("form") or {}, blob)
         op = client.import_collection(att["attachment"]["id"])

@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import time
 
+from outline_backup.core.attachments import ATTACHMENT_DIR, attachment_path, find_attachment_ids
 from outline_backup.core.manifest import MANIFEST_PATH, Manifest, sidecar_for
-from outline_backup.core.outline_client import OutlineClient
+from outline_backup.core.outline_client import OutlineClient, OutlineError
 from outline_backup.core.serialize import comments_sidecar, doc_slug, slugify
 from outline_backup.destinations.base import Destination, DestinationConflictError, git_blob_sha
 
@@ -24,10 +25,19 @@ MAX_CONFLICT_ATTEMPTS = 3
 
 
 class SyncEngine:
-    def __init__(self, client: OutlineClient, dest: Destination, pace_seconds: float = 0.0):
+    def __init__(
+        self,
+        client: OutlineClient,
+        dest: Destination,
+        pace_seconds: float = 0.0,
+        include_attachments: bool = True,
+        max_attachment_bytes: int = 50_000_000,
+    ):
         self.client = client
         self.dest = dest
         self.pace_seconds = pace_seconds
+        self.include_attachments = include_attachments
+        self.max_attachment_bytes = max_attachment_bytes
 
     # -- helpers ----------------------------------------------------------
     def _load_manifest(self, tree: dict[str, str]) -> Manifest:
@@ -103,12 +113,35 @@ class SyncEngine:
             stale.append(sidecar_path)
         return stale
 
-    def _doc_files(self, doc_id: str, path: str) -> dict[str, bytes]:
-        markdown = self.client.document_export(doc_id).encode()
+    def _doc_files(self, doc_id: str, path: str, tree: dict[str, str]) -> dict[str, bytes]:
+        markdown = self.client.document_export(doc_id)
         comments = self.client.list_comments(doc_id)
-        files = {path: markdown}
+        files = {path: markdown.encode()}
         if comments:
             files[sidecar_for(path)] = comments_sidecar(comments)
+        if self.include_attachments:
+            files.update(self._attachment_files(markdown, tree))
+        return files
+
+    def _attachment_files(self, markdown: str, tree: dict[str, str]) -> dict[str, bytes]:
+        """Download referenced attachments not already mirrored (they are immutable)."""
+        files: dict[str, bytes] = {}
+        for att_id in find_attachment_ids(markdown):
+            att_path = attachment_path(att_id)
+            if att_path in tree:
+                continue
+            try:
+                data = self.client.download_attachment(att_id)
+            except OutlineError as exc:
+                logger.warning("skipping attachment %s: %s", att_id, exc)
+                continue
+            if len(data) > self.max_attachment_bytes:
+                logger.warning(
+                    "skipping attachment %s: %d bytes exceeds cap %d",
+                    att_id, len(data), self.max_attachment_bytes,
+                )
+                continue
+            files[att_path] = data
         return files
 
     @staticmethod
@@ -150,7 +183,7 @@ class SyncEngine:
         old_path = manifest.path_for(doc_id)
         path = self._upsert_document(manifest, doc)
 
-        files = self._doc_files(doc_id, path)
+        files = self._doc_files(doc_id, path, tree)
         stale = self._stale_for(tree, old_path, path, files)
 
         changed = self._changed(files, tree)
@@ -180,13 +213,15 @@ class SyncEngine:
         pending: dict[str, bytes] = {}
         stale: list[str] = []
         seen: set[str] = set()
+        referenced_attachments: set[str] = set()
         for col in self.client.list_collections():
             self._collection_slug(manifest, col["id"], col)
             for doc in self.client.list_documents(col["id"]):
                 seen.add(doc["id"])
                 old_path = manifest.path_for(doc["id"])
                 path = self._upsert_document(manifest, doc)
-                files = self._doc_files(doc["id"], path)
+                files = self._doc_files(doc["id"], path, tree)
+                referenced_attachments.update(find_attachment_ids(files[path].decode()))
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
                 _sleep(self.pace_seconds)
@@ -194,6 +229,13 @@ class SyncEngine:
             for doc_id in [d for d in manifest.documents if d not in seen]:
                 logger.info("pruning upstream-deleted document %s", doc_id)
                 stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
+            for path in tree:
+                if (
+                    path.startswith(f"{ATTACHMENT_DIR}/")
+                    and path.removeprefix(f"{ATTACHMENT_DIR}/") not in referenced_attachments
+                ):
+                    logger.info("pruning unreferenced attachment %s", path)
+                    stale.append(path)
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
         manifest_bytes = manifest.to_bytes()
