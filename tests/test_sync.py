@@ -2,9 +2,8 @@ import json
 from pathlib import Path
 
 import httpx
-import respx
-
 import pytest
+import respx
 
 from outline_backup.core import sync as sync_module
 from outline_backup.core.manifest import MANIFEST_PATH
