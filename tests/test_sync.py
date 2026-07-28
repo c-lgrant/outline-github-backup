@@ -393,7 +393,7 @@ def test_sync_document_mirrors_attachments(tmp_path: Path):
 
 @respx.mock
 def test_attachments_never_redownloaded(tmp_path: Path):
-    eng, dest = engine(tmp_path)
+    eng, _dest = engine(tmp_path)
     mock_doc_endpoints(markdown=MD_WITH_ATT)
     att_route = respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
         return_value=httpx.Response(200, content=b"PNGDATA")
