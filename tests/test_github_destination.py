@@ -6,7 +6,7 @@ import pytest
 import respx
 
 from outline_backup.destinations.base import DestinationConflictError
-from outline_backup.destinations.github import GitHubDestination
+from outline_backup.destinations.github import GitHubDestination, GitHubDestinationError
 
 API = "https://api.github.com/repos/example/backup-data"
 
@@ -121,6 +121,27 @@ def test_list_tree_filters_prefix():
         )
     )
     assert dest().list_tree() == {"x.md": "s1"}
+
+
+@respx.mock
+def test_list_tree_truncated_fails_loudly():
+    respx.get(f"{API}/git/ref/heads/main").mock(
+        return_value=httpx.Response(200, json={"object": {"sha": "c-base"}})
+    )
+    respx.get(f"{API}/git/commits/c-base").mock(
+        return_value=httpx.Response(200, json={"tree": {"sha": "t-base"}})
+    )
+    respx.get(f"{API}/git/trees/t-base").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "truncated": True,
+                "tree": [{"path": "data/x.md", "type": "blob", "sha": "s1"}],
+            },
+        )
+    )
+    with pytest.raises(GitHubDestinationError, match="truncated"):
+        dest().list_tree()
 
 
 def test_empty_path_prefix_rejected():

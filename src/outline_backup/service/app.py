@@ -15,6 +15,8 @@ from outline_backup.service.worker import DebounceWorker
 
 logger = logging.getLogger("outline_backup.service")
 
+MAX_BODY_BYTES = 1_048_576  # Outline events are small; anything larger is abuse
+
 
 def create_app(settings: Settings | None = None, worker: DebounceWorker | None = None) -> FastAPI:
     settings = settings or load_settings()
@@ -39,6 +41,7 @@ def create_app(settings: Settings | None = None, worker: DebounceWorker | None =
             engine = SyncEngine(
                 client,
                 get_destination(settings),
+                pace_seconds=settings.backfill_pace_seconds,
                 include_attachments=settings.include_attachments,
                 max_attachment_bytes=settings.max_attachment_bytes,
             )
@@ -62,7 +65,14 @@ def create_app(settings: Settings | None = None, worker: DebounceWorker | None =
 
     @app.post("/webhook")
     async def webhook(request: Request) -> Response:
-        body = await request.body()
+        chunks = []
+        received = 0
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > MAX_BODY_BYTES:
+                return Response(status_code=413)
+            chunks.append(chunk)
+        body = b"".join(chunks)
         try:
             verify_signature(
                 request.headers.get("Outline-Signature"), body, settings.outline_webhook_secret

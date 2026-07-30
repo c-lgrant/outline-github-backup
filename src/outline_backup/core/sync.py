@@ -225,17 +225,36 @@ class SyncEngine:
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
                 _sleep(self.pace_seconds)
-        if prune:
+        if prune and not seen:
+            logger.warning("prune requested but the walk saw zero documents; refusing to prune")
+        elif prune:
+            walk_complete = True
             for doc_id in [d for d in manifest.documents if d not in seen]:
-                logger.info("pruning upstream-deleted document %s", doc_id)
-                stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
-            for path in tree:
-                if (
-                    path.startswith(f"{ATTACHMENT_DIR}/")
-                    and path.removeprefix(f"{ATTACHMENT_DIR}/") not in referenced_attachments
-                ):
-                    logger.info("pruning unreferenced attachment %s", path)
-                    stale.append(path)
+                verdict = self.client.document_deleted_upstream(doc_id)
+                if verdict is True:
+                    logger.info("pruning upstream-deleted document %s", doc_id)
+                    stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
+                elif verdict is False:
+                    walk_complete = False
+                    logger.warning(
+                        "document %s absent from listing but alive upstream; keeping "
+                        "(pagination skip or transient empty response)", doc_id,
+                    )
+                else:
+                    walk_complete = False
+                    logger.warning("could not verify document %s upstream; keeping", doc_id)
+            if walk_complete:
+                # Safe only when every manifest doc was walked this pass: an
+                # unwalked doc's attachment references are unknown.
+                for path in tree:
+                    if (
+                        path.startswith(f"{ATTACHMENT_DIR}/")
+                        and path.removeprefix(f"{ATTACHMENT_DIR}/") not in referenced_attachments
+                    ):
+                        logger.info("pruning unreferenced attachment %s", path)
+                        stale.append(path)
+            else:
+                logger.warning("skipping attachment GC: not all documents were walked this pass")
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
         manifest_bytes = manifest.to_bytes()
