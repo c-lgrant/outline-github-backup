@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import time
 
+from outline_backup.core.attachments import ATTACHMENT_DIR, attachment_path, find_attachment_ids
 from outline_backup.core.manifest import MANIFEST_PATH, Manifest, sidecar_for
-from outline_backup.core.outline_client import OutlineClient
+from outline_backup.core.outline_client import OutlineClient, OutlineError
 from outline_backup.core.serialize import comments_sidecar, doc_slug, slugify
 from outline_backup.destinations.base import Destination, DestinationConflictError, git_blob_sha
 
@@ -24,10 +25,21 @@ MAX_CONFLICT_ATTEMPTS = 3
 
 
 class SyncEngine:
-    def __init__(self, client: OutlineClient, dest: Destination, pace_seconds: float = 0.0):
+    def __init__(
+        self,
+        client: OutlineClient,
+        dest: Destination,
+        pace_seconds: float = 0.0,
+        include_attachments: bool = True,
+        max_attachment_bytes: int = 50_000_000,
+        attachment_flush_bytes: int = 64_000_000,
+    ):
         self.client = client
         self.dest = dest
         self.pace_seconds = pace_seconds
+        self.include_attachments = include_attachments
+        self.max_attachment_bytes = max_attachment_bytes
+        self.attachment_flush_bytes = attachment_flush_bytes
 
     # -- helpers ----------------------------------------------------------
     def _load_manifest(self, tree: dict[str, str]) -> Manifest:
@@ -103,12 +115,38 @@ class SyncEngine:
             stale.append(sidecar_path)
         return stale
 
-    def _doc_files(self, doc_id: str, path: str) -> dict[str, bytes]:
-        markdown = self.client.document_export(doc_id).encode()
+    def _doc_files(
+        self,
+        doc_id: str,
+        path: str,
+        tree: dict[str, str],
+        att_out: dict[str, bytes] | None = None,
+    ) -> dict[str, bytes]:
+        markdown = self.client.document_export(doc_id)
         comments = self.client.list_comments(doc_id)
-        files = {path: markdown}
+        files = {path: markdown.encode()}
         if comments:
             files[sidecar_for(path)] = comments_sidecar(comments)
+        if self.include_attachments:
+            sink = files if att_out is None else att_out
+            sink.update(self._attachment_files(markdown, tree, pending=sink))
+        return files
+
+    def _attachment_files(
+        self, markdown: str, tree: dict[str, str], pending: dict[str, bytes]
+    ) -> dict[str, bytes]:
+        """Download referenced attachments not already mirrored (they are immutable)."""
+        files: dict[str, bytes] = {}
+        for att_id in find_attachment_ids(markdown):
+            att_path = attachment_path(att_id)
+            if att_path in tree or att_path in pending:
+                continue
+            try:
+                data = self.client.download_attachment(att_id, max_bytes=self.max_attachment_bytes)
+            except OutlineError as exc:
+                logger.warning("skipping attachment %s: %s", att_id, exc)
+                continue
+            files[att_path] = data
         return files
 
     @staticmethod
@@ -150,7 +188,7 @@ class SyncEngine:
         old_path = manifest.path_for(doc_id)
         path = self._upsert_document(manifest, doc)
 
-        files = self._doc_files(doc_id, path)
+        files = self._doc_files(doc_id, path, tree)
         stale = self._stale_for(tree, old_path, path, files)
 
         changed = self._changed(files, tree)
@@ -178,33 +216,61 @@ class SyncEngine:
         tree = self.dest.list_tree()
         manifest = self._load_manifest(tree)
         pending: dict[str, bytes] = {}
+        att_pending: dict[str, bytes] = {}
         stale: list[str] = []
         seen: set[str] = set()
+        referenced_attachments: set[str] = set()
         for col in self.client.list_collections():
             self._collection_slug(manifest, col["id"], col)
             for doc in self.client.list_documents(col["id"]):
                 seen.add(doc["id"])
                 old_path = manifest.path_for(doc["id"])
                 path = self._upsert_document(manifest, doc)
-                files = self._doc_files(doc["id"], path)
+                files = self._doc_files(doc["id"], path, tree, att_out=att_pending)
+                referenced_attachments.update(find_attachment_ids(files[path].decode()))
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
+                # Attachments are immutable and additive, so they can land in
+                # their own commits as the walk progresses — holding a whole
+                # workspace's attachment bytes until the final commit would
+                # make backfill memory proportional to total attachment size.
+                if sum(map(len, att_pending.values())) >= self.attachment_flush_bytes:
+                    self.dest.write_files(att_pending, f"{message} (attachments)")
+                    for att_path, data in att_pending.items():
+                        tree[att_path] = git_blob_sha(data)
+                    att_pending.clear()
                 _sleep(self.pace_seconds)
+        pending.update(att_pending)
         if prune and not seen:
             logger.warning("prune requested but the walk saw zero documents; refusing to prune")
         elif prune:
+            walk_complete = True
             for doc_id in [d for d in manifest.documents if d not in seen]:
                 verdict = self.client.document_deleted_upstream(doc_id)
                 if verdict is True:
                     logger.info("pruning upstream-deleted document %s", doc_id)
                     stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
                 elif verdict is False:
+                    walk_complete = False
                     logger.warning(
                         "document %s absent from listing but alive upstream; keeping "
                         "(pagination skip or transient empty response)", doc_id,
                     )
                 else:
+                    walk_complete = False
                     logger.warning("could not verify document %s upstream; keeping", doc_id)
+            if walk_complete:
+                # Safe only when every manifest doc was walked this pass: an
+                # unwalked doc's attachment references are unknown.
+                for path in tree:
+                    if (
+                        path.startswith(f"{ATTACHMENT_DIR}/")
+                        and path.removeprefix(f"{ATTACHMENT_DIR}/") not in referenced_attachments
+                    ):
+                        logger.info("pruning unreferenced attachment %s", path)
+                        stale.append(path)
+            else:
+                logger.warning("skipping attachment GC: not all documents were walked this pass")
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
         manifest_bytes = manifest.to_bytes()

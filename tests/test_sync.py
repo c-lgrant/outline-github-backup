@@ -459,6 +459,129 @@ def test_sync_all_without_prune_keeps_upstream_deleted(tmp_path: Path):
     assert "collections/guides-Ab12/intro-Xy9.md" in dest.list_tree()
 
 
+ATT_ID = "11111111-2222-3333-4444-555555555555"
+MD_WITH_ATT = f"# Intro\n![diagram](/api/attachments.redirect?id={ATT_ID})\n"
+
+
+@respx.mock
+def test_sync_document_mirrors_attachments(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    assert eng.sync_document("doc1") is True
+    assert dest.read_file(f"attachments/{ATT_ID}") == b"PNGDATA"
+
+
+@respx.mock
+def test_attachments_never_redownloaded(tmp_path: Path):
+    eng, _dest = engine(tmp_path)
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    att_route = respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    eng.sync_document("doc1")
+    mock_doc_endpoints(markdown=MD_WITH_ATT + "\nedited\n")
+    eng.sync_document("doc1")
+    assert att_route.call_count == 1
+
+
+@respx.mock
+def test_attachments_disabled_downloads_nothing(tmp_path: Path):
+    dest = LocalDestination(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest, include_attachments=False)
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    att_route = respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    eng.sync_document("doc1")
+    assert att_route.call_count == 0
+    assert f"attachments/{ATT_ID}" not in dest.list_tree()
+
+
+@respx.mock
+def test_oversized_attachment_skipped(tmp_path: Path):
+    dest = LocalDestination(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest, max_attachment_bytes=3)
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    assert eng.sync_document("doc1") is True  # doc still mirrored
+    assert f"attachments/{ATT_ID}" not in dest.list_tree()
+
+
+@respx.mock
+def test_failed_attachment_download_does_not_sink_sync(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(404)
+    )
+    assert eng.sync_document("doc1") is True
+    assert "collections/guides-Ab12/intro-Xy9.md" in dest.list_tree()
+
+
+@respx.mock
+def test_prune_garbage_collects_unreferenced_attachments(tmp_path: Path):
+    eng, dest = engine(tmp_path)
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    docs_route = respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC]})
+    )
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    eng.sync_all()
+    assert f"attachments/{ATT_ID}" in dest.list_tree()
+
+    # doc1 (the only referrer) is deleted upstream; doc2 keeps the walk alive
+    doc2 = dict(DOC, id="doc2", title="Other", urlId="Zz2")
+    docs_route.mock(return_value=httpx.Response(200, json={"data": [doc2]}))
+    mock_doc_endpoints(doc=doc2, markdown="# Other\n")
+    respx.post(f"{BASE}/api/documents.info").mock(
+        side_effect=lambda request: httpx.Response(404, json={})
+        if json.loads(request.content).get("id") == "doc1"
+        else httpx.Response(200, json={"data": doc2})
+    )
+    eng.sync_all(prune=True)
+    assert f"attachments/{ATT_ID}" not in dest.list_tree()
+
+
+@respx.mock
+def test_attachment_gc_skipped_when_walk_incomplete(tmp_path: Path):
+    # If a manifest doc wasn't walked and is still alive upstream, its
+    # attachment references are unknown this pass — GC must not run.
+    eng, dest = engine(tmp_path)
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    docs_route = respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC]})
+    )
+    mock_doc_endpoints(markdown=MD_WITH_ATT)
+    respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    eng.sync_all()
+
+    # listing skips doc1 (still alive per documents.info); doc2 appears
+    doc2 = dict(DOC, id="doc2", title="Other", urlId="Zz2")
+    docs_route.mock(return_value=httpx.Response(200, json={"data": [doc2]}))
+    mock_doc_endpoints(doc=doc2, markdown="# Other\n")
+    respx.post(f"{BASE}/api/documents.info").mock(
+        side_effect=lambda request: httpx.Response(200, json={"data": DOC})
+        if json.loads(request.content).get("id") == "doc1"
+        else httpx.Response(200, json={"data": doc2})
+    )
+    eng.sync_all(prune=True)
+    assert f"attachments/{ATT_ID}" in dest.list_tree()
+
+
 @respx.mock
 def test_sync_document_cycle_guard_avoids_recursion_error(tmp_path: Path):
     eng, dest = engine(tmp_path)
@@ -481,3 +604,74 @@ def test_sync_document_cycle_guard_avoids_recursion_error(tmp_path: Path):
     assert eng.sync_document("doc1") is True
     tree = dest.list_tree()
     assert "collections/guides-Ab12/intro-Xy9.md" in tree
+
+
+@respx.mock
+def test_sync_all_flushes_attachments_in_batches(tmp_path: Path):
+    # A full backfill must not hold every attachment's bytes in memory until
+    # the final commit: batches flush as separate commits once they exceed
+    # the flush threshold, and the final doc commit carries no attachments.
+    dest = RecordingDest(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest, attachment_flush_bytes=1)
+    att2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    doc2 = dict(DOC, id="doc2", title="Other", urlId="Zz2")
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC, doc2]})
+    )
+    respx.post(f"{BASE}/api/documents.info").mock(
+        side_effect=lambda request: httpx.Response(
+            200, json={"data": DOC if json.loads(request.content).get("id") == "doc1" else doc2}
+        )
+    )
+    respx.post(f"{BASE}/api/documents.export").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            json={"data": f"# A\n![i](/api/attachments.redirect?id={ATT_ID})\n"
+                  if json.loads(request.content).get("id") == "doc1"
+                  else f"# B\n![i](/api/attachments.redirect?id={att2})\n"},
+        )
+    )
+    respx.post(f"{BASE}/api/collections.info").mock(return_value=httpx.Response(200, json={"data": COL}))
+    respx.post(f"{BASE}/api/comments.list").mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.get(f"{BASE}/api/attachments.redirect").mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    eng.sync_all()
+
+    tree = dest.list_tree()
+    assert f"attachments/{ATT_ID}" in tree and f"attachments/{att2}" in tree
+    flushes = [c for c in dest.write_calls if any(p.startswith("attachments/") for p in c["files"])]
+    assert len(flushes) == 2  # one per attachment at threshold 1
+    final = dest.write_calls[-1]
+    assert not any(p.startswith("attachments/") for p in final["files"])
+
+
+@respx.mock
+def test_shared_attachment_downloaded_once_per_walk(tmp_path: Path):
+    dest = LocalDestination(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest)
+    doc2 = dict(DOC, id="doc2", title="Other", urlId="Zz2")
+    respx.post(f"{BASE}/api/collections.list").mock(
+        return_value=httpx.Response(200, json={"data": [COL]})
+    )
+    respx.post(f"{BASE}/api/documents.list").mock(
+        return_value=httpx.Response(200, json={"data": [DOC, doc2]})
+    )
+    respx.post(f"{BASE}/api/documents.info").mock(
+        side_effect=lambda request: httpx.Response(
+            200, json={"data": DOC if json.loads(request.content).get("id") == "doc1" else doc2}
+        )
+    )
+    respx.post(f"{BASE}/api/documents.export").mock(
+        return_value=httpx.Response(200, json={"data": MD_WITH_ATT})  # both docs share ATT_ID
+    )
+    respx.post(f"{BASE}/api/collections.info").mock(return_value=httpx.Response(200, json={"data": COL}))
+    respx.post(f"{BASE}/api/comments.list").mock(return_value=httpx.Response(200, json={"data": []}))
+    att_route = respx.get(f"{BASE}/api/attachments.redirect", params={"id": ATT_ID}).mock(
+        return_value=httpx.Response(200, content=b"PNGDATA")
+    )
+    eng.sync_all()
+    assert att_route.call_count == 1

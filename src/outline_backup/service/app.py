@@ -42,6 +42,8 @@ def create_app(settings: Settings | None = None, worker: DebounceWorker | None =
                 client,
                 get_destination(settings),
                 pace_seconds=settings.backfill_pace_seconds,
+                include_attachments=settings.include_attachments,
+                max_attachment_bytes=settings.max_attachment_bytes,
             )
             app.state.worker = DebounceWorker(engine, settings.debounce_seconds)
         backfill_task: asyncio.Task | None = None

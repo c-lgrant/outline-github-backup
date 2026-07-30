@@ -108,6 +108,31 @@ class OutlineClient:
             payload["parentCommentId"] = parent_comment_id
         return self._post("comments.create", **payload)["data"]
 
+    def download_attachment(self, attachment_id: str, max_bytes: int | None = None) -> bytes:
+        # attachments.redirect 302s to a signed URL. httpx keeps the auth
+        # header on same-origin redirects (local storage) and strips it on
+        # cross-origin ones (S3-style), which is exactly what we want.
+        # Streamed so the size cap bounds memory, not just the stored blob.
+        with self._http.stream(
+            "GET",
+            f"{self._base}/api/attachments.redirect",
+            params={"id": attachment_id},
+            headers=self._headers,
+            follow_redirects=True,
+        ) as resp:
+            if resp.status_code != 200:
+                raise OutlineError(f"attachments.redirect failed: HTTP {resp.status_code}")
+            chunks = []
+            received = 0
+            for chunk in resp.iter_bytes():
+                received += len(chunk)
+                if max_bytes is not None and received > max_bytes:
+                    raise OutlineError(
+                        f"attachment {attachment_id} exceeds {max_bytes}-byte cap"
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks)
+
     # -- webhooks / import / file operations -----------------------------
     def create_webhook(self, name: str, url: str, secret: str, events: list[str]) -> dict:
         return self._post("webhookSubscriptions.create", name=name, url=url, secret=secret, events=events)["data"]

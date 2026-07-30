@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     github_token: str = ""
     debounce_seconds: float = 60.0
     include_attachments: bool = True
+    max_attachment_bytes: int = 50_000_000
     backfill_on_start: bool = False
     # Rate-limit knobs for self-hosters with stricter Outline API limits.
     max_429_retries: int = 5

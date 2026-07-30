@@ -37,7 +37,13 @@ def _engine(settings: Settings, dest=None, pace_seconds: float = 0.0) -> SyncEng
         max_429_retries=settings.max_429_retries,
         max_retry_after_seconds=settings.max_retry_after_seconds,
     )
-    return SyncEngine(client, dest, pace_seconds=pace_seconds)
+    return SyncEngine(
+        client,
+        dest,
+        pace_seconds=pace_seconds,
+        include_attachments=settings.include_attachments,
+        max_attachment_bytes=settings.max_attachment_bytes,
+    )
 
 
 @app.command()

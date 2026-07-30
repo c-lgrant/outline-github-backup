@@ -394,3 +394,45 @@ def test_restore_collections_filter_warns_on_unknown_name(tmp_path: Path):
     report = restore(OutlineClient(BASE, "tok"), dest, dry_run=True, collections=["Nope"])
     assert report.collections == 0
     assert any("Nope" in w for w in report.warnings)
+
+
+ATT_ID = "11111111-2222-3333-4444-555555555555"
+
+
+def seed_with_attachment(tmp_path: Path) -> LocalDestination:
+    dest = LocalDestination(tmp_path)
+    m = Manifest()
+    m.set_collection("col1", name="Guides", slug="guides-Ab12")
+    m.set_document("doc1", title="Intro", slug="intro-Xy9",
+                   path="collections/guides-Ab12/intro-Xy9.md",
+                   collection_id="col1", parent_document_id=None, updated_at=None)
+    md = f"# Intro\n![diagram](/api/attachments.redirect?id={ATT_ID})\n"
+    dest.write_files({
+        "_manifest.json": m.to_bytes(),
+        "collections/guides-Ab12/intro-Xy9.md": md.encode(),
+        f"attachments/{ATT_ID}": b"PNGDATA",
+    }, "seed")
+    return dest
+
+
+def test_zip_rewrites_links_and_bundles_attachments(tmp_path: Path):
+    dest = seed_with_attachment(tmp_path)
+    manifest = Manifest.from_bytes(dest.read_file("_manifest.json"))
+    blob = build_markdown_zip(manifest, dest.read_file, "col1", tree=dest.list_tree())
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        assert set(zf.namelist()) == {"Guides/Intro.md", f"attachments/{ATT_ID}"}
+        content = zf.read("Guides/Intro.md").decode()
+        # link must RESOLVE from the doc's member path to the bundled file:
+        # Guides/Intro.md -> ../attachments/<id> -> attachments/<id> at zip root
+        assert f"![diagram](../attachments/{ATT_ID})" in content
+        assert "attachments.redirect" not in content
+        assert zf.read(f"attachments/{ATT_ID}") == b"PNGDATA"
+
+
+def test_zip_skips_attachments_missing_from_tree(tmp_path: Path):
+    dest = seed_with_attachment(tmp_path)
+    manifest = Manifest.from_bytes(dest.read_file("_manifest.json"))
+    tree = {p: s for p, s in dest.list_tree().items() if not p.startswith("attachments/")}
+    blob = build_markdown_zip(manifest, dest.read_file, "col1", tree=tree)
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        assert zf.namelist() == ["Guides/Intro.md"]
