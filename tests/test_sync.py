@@ -2,12 +2,14 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 import respx
 
 from outline_backup.core import sync as sync_module
 from outline_backup.core.manifest import MANIFEST_PATH
 from outline_backup.core.outline_client import OutlineClient
 from outline_backup.core.sync import SyncEngine
+from outline_backup.destinations.base import DestinationConflictError
 from outline_backup.destinations.local import LocalDestination
 
 BASE = "https://wiki.example.com"
@@ -241,6 +243,99 @@ def test_sync_document_prunes_orphaned_sidecar(tmp_path: Path):
     tree = dest.list_tree()
     assert "collections/guides-Ab12/intro-Xy9.comments.json" not in tree
     assert "collections/guides-Ab12/intro-Xy9.md" in tree
+
+
+class RecordingDest(LocalDestination):
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.write_calls: list[dict] = []
+
+    def write_files(self, files, message, deletions=None):
+        self.write_calls.append({"files": set(files), "deletions": list(deletions or [])})
+        super().write_files(files, message, deletions=deletions)
+
+
+@respx.mock
+def test_rename_is_one_atomic_write(tmp_path: Path):
+    dest = RecordingDest(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest)
+    mock_doc_endpoints()
+    eng.sync_document("doc1")
+    dest.write_calls.clear()
+
+    renamed = dict(DOC, title="Welcome")
+    mock_doc_endpoints(doc=renamed, markdown="# Welcome\n")
+    eng.sync_document("doc1")
+
+    assert len(dest.write_calls) == 1
+    call = dest.write_calls[0]
+    assert "collections/guides-Ab12/intro-Xy9.md" in call["deletions"]
+    assert "collections/guides-Ab12/welcome-Xy9.md" in call["files"]
+
+
+@respx.mock
+def test_delete_document_is_one_atomic_write(tmp_path: Path):
+    dest = RecordingDest(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest)
+    mock_doc_endpoints()
+    eng.sync_document("doc1")
+    dest.write_calls.clear()
+
+    assert eng.delete_document("doc1") is True
+    assert len(dest.write_calls) == 1
+    call = dest.write_calls[0]
+    assert call["files"] == {MANIFEST_PATH}
+    assert "collections/guides-Ab12/intro-Xy9.md" in call["deletions"]
+
+
+class ConflictOnceDest(LocalDestination):
+    """First write conflicts; a concurrent writer's manifest entry lands in between."""
+
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.conflicted = False
+
+    def write_files(self, files, message, deletions=None):
+        if not self.conflicted:
+            self.conflicted = True
+            manifest = {"version": 1, "collections": {}, "documents": {
+                "doc-other": {"title": "Other", "slug": "other-Zz1",
+                              "path": "collections/misc-Cc1/other-Zz1.md",
+                              "collectionId": "col2", "parentDocumentId": None,
+                              "updatedAt": "2026-01-05T00:00:00Z"}}}
+            super().write_files(
+                {MANIFEST_PATH: (json.dumps(manifest) + "\n").encode()}, "concurrent writer"
+            )
+            raise DestinationConflictError("ref moved")
+        super().write_files(files, message, deletions=deletions)
+
+
+@respx.mock
+def test_conflict_retry_reapplies_on_fresh_manifest(tmp_path: Path):
+    # Issue #10: after a non-fast-forward conflict the engine must re-read
+    # the manifest and re-apply — resubmitting the stale blob would clobber
+    # the concurrent writer's doc-other entry.
+    dest = ConflictOnceDest(tmp_path)
+    eng = SyncEngine(OutlineClient(BASE, "tok"), dest)
+    mock_doc_endpoints()
+    assert eng.sync_document("doc1") is True
+
+    manifest = json.loads(dest.read_file(MANIFEST_PATH))
+    assert "doc1" in manifest["documents"]
+    assert "doc-other" in manifest["documents"]
+
+
+class AlwaysConflictDest(LocalDestination):
+    def write_files(self, files, message, deletions=None):
+        raise DestinationConflictError("ref moved")
+
+
+@respx.mock
+def test_conflict_retry_gives_up_eventually(tmp_path: Path):
+    eng = SyncEngine(OutlineClient(BASE, "tok"), AlwaysConflictDest(tmp_path))
+    mock_doc_endpoints()
+    with pytest.raises(DestinationConflictError):
+        eng.sync_document("doc1")
 
 
 @respx.mock

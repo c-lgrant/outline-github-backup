@@ -11,17 +11,17 @@ class LocalDestination:
     def __init__(self, root: Path):
         self.root = Path(root)
 
-    def write_files(self, files: dict[str, bytes], message: str) -> None:
+    def write_files(
+        self, files: dict[str, bytes], message: str, deletions: list[str] | None = None
+    ) -> None:
+        for rel in deletions or []:
+            target = self.root / rel
+            if target.exists():
+                target.unlink()
         for rel, data in files.items():
             target = self.root / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-
-    def delete_files(self, paths: list[str], message: str) -> None:
-        for rel in paths:
-            target = self.root / rel
-            if target.exists():
-                target.unlink()
 
     def list_tree(self) -> dict[str, str]:
         return {
