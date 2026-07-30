@@ -59,6 +59,22 @@ def test_bad_signature_401():
     assert resp.status_code == 401 and worker.events == []
 
 
+def test_oversized_body_413():
+    client, worker = make_client()
+    body = b"x" * (1_048_576 + 1)
+    resp = client.post("/webhook", content=body, headers=signed(body))
+    assert resp.status_code == 413 and worker.events == []
+
+
+def test_body_at_limit_still_processed():
+    client, worker = make_client()
+    payload = {"event": "documents.update", "payload": {"id": "d1", "model": {}}}
+    body = json.dumps(payload).encode()
+    body += b" " * (1_048_576 - len(body))  # trailing whitespace is valid JSON padding
+    resp = client.post("/webhook", content=body, headers=signed(body))
+    assert resp.status_code == 200 and worker.events[0]["event"] == "documents.update"
+
+
 def test_bad_json_400():
     client, _ = make_client()
     body = b"not json"
