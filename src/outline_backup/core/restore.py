@@ -82,7 +82,7 @@ def build_markdown_zip(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for doc_id, member_path in sorted(members.items(), key=lambda kv: kv[1]):
             markdown = read_file(manifest.documents[doc_id]["path"]).decode()
-            zf.writestr(member_path, rewrite_for_zip(markdown))
+            zf.writestr(member_path, rewrite_for_zip(markdown, member_path))
             for att_id in find_attachment_ids(markdown):
                 att_path = attachment_path(att_id)
                 if att_path in bundled or tree is None or att_path not in tree:

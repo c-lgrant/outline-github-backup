@@ -26,6 +26,11 @@ def attachment_path(attachment_id: str) -> str:
     return f"{ATTACHMENT_DIR}/{attachment_id}"
 
 
-def rewrite_for_zip(markdown: str) -> str:
-    """Relativize attachment URLs to the zip-root attachments/ folder."""
-    return _URL_RE.sub(rf"{ATTACHMENT_DIR}/\1", markdown)
+def rewrite_for_zip(markdown: str, member_path: str) -> str:
+    """Relativize attachment URLs so they resolve from the doc's zip member.
+
+    Attachments sit at the zip root; a doc at `Guides/Sub/Deep.md` needs
+    `../../attachments/<id>` to reach them.
+    """
+    prefix = "../" * member_path.count("/")
+    return _URL_RE.sub(rf"{prefix}{ATTACHMENT_DIR}/\1", markdown)

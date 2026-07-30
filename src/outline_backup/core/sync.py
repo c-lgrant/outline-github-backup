@@ -32,12 +32,14 @@ class SyncEngine:
         pace_seconds: float = 0.0,
         include_attachments: bool = True,
         max_attachment_bytes: int = 50_000_000,
+        attachment_flush_bytes: int = 64_000_000,
     ):
         self.client = client
         self.dest = dest
         self.pace_seconds = pace_seconds
         self.include_attachments = include_attachments
         self.max_attachment_bytes = max_attachment_bytes
+        self.attachment_flush_bytes = attachment_flush_bytes
 
     # -- helpers ----------------------------------------------------------
     def _load_manifest(self, tree: dict[str, str]) -> Manifest:
@@ -113,33 +115,36 @@ class SyncEngine:
             stale.append(sidecar_path)
         return stale
 
-    def _doc_files(self, doc_id: str, path: str, tree: dict[str, str]) -> dict[str, bytes]:
+    def _doc_files(
+        self,
+        doc_id: str,
+        path: str,
+        tree: dict[str, str],
+        att_out: dict[str, bytes] | None = None,
+    ) -> dict[str, bytes]:
         markdown = self.client.document_export(doc_id)
         comments = self.client.list_comments(doc_id)
         files = {path: markdown.encode()}
         if comments:
             files[sidecar_for(path)] = comments_sidecar(comments)
         if self.include_attachments:
-            files.update(self._attachment_files(markdown, tree))
+            sink = files if att_out is None else att_out
+            sink.update(self._attachment_files(markdown, tree, pending=sink))
         return files
 
-    def _attachment_files(self, markdown: str, tree: dict[str, str]) -> dict[str, bytes]:
+    def _attachment_files(
+        self, markdown: str, tree: dict[str, str], pending: dict[str, bytes]
+    ) -> dict[str, bytes]:
         """Download referenced attachments not already mirrored (they are immutable)."""
         files: dict[str, bytes] = {}
         for att_id in find_attachment_ids(markdown):
             att_path = attachment_path(att_id)
-            if att_path in tree:
+            if att_path in tree or att_path in pending:
                 continue
             try:
-                data = self.client.download_attachment(att_id)
+                data = self.client.download_attachment(att_id, max_bytes=self.max_attachment_bytes)
             except OutlineError as exc:
                 logger.warning("skipping attachment %s: %s", att_id, exc)
-                continue
-            if len(data) > self.max_attachment_bytes:
-                logger.warning(
-                    "skipping attachment %s: %d bytes exceeds cap %d",
-                    att_id, len(data), self.max_attachment_bytes,
-                )
                 continue
             files[att_path] = data
         return files
@@ -211,6 +216,7 @@ class SyncEngine:
         tree = self.dest.list_tree()
         manifest = self._load_manifest(tree)
         pending: dict[str, bytes] = {}
+        att_pending: dict[str, bytes] = {}
         stale: list[str] = []
         seen: set[str] = set()
         referenced_attachments: set[str] = set()
@@ -220,11 +226,21 @@ class SyncEngine:
                 seen.add(doc["id"])
                 old_path = manifest.path_for(doc["id"])
                 path = self._upsert_document(manifest, doc)
-                files = self._doc_files(doc["id"], path, tree)
+                files = self._doc_files(doc["id"], path, tree, att_out=att_pending)
                 referenced_attachments.update(find_attachment_ids(files[path].decode()))
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
+                # Attachments are immutable and additive, so they can land in
+                # their own commits as the walk progresses — holding a whole
+                # workspace's attachment bytes until the final commit would
+                # make backfill memory proportional to total attachment size.
+                if sum(map(len, att_pending.values())) >= self.attachment_flush_bytes:
+                    self.dest.write_files(att_pending, f"{message} (attachments)")
+                    for att_path, data in att_pending.items():
+                        tree[att_path] = git_blob_sha(data)
+                    att_pending.clear()
                 _sleep(self.pace_seconds)
+        pending.update(att_pending)
         if prune and not seen:
             logger.warning("prune requested but the walk saw zero documents; refusing to prune")
         elif prune:

@@ -422,7 +422,9 @@ def test_zip_rewrites_links_and_bundles_attachments(tmp_path: Path):
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         assert set(zf.namelist()) == {"Guides/Intro.md", f"attachments/{ATT_ID}"}
         content = zf.read("Guides/Intro.md").decode()
-        assert f"![diagram](attachments/{ATT_ID})" in content
+        # link must RESOLVE from the doc's member path to the bundled file:
+        # Guides/Intro.md -> ../attachments/<id> -> attachments/<id> at zip root
+        assert f"![diagram](../attachments/{ATT_ID})" in content
         assert "attachments.redirect" not in content
         assert zf.read(f"attachments/{ATT_ID}") == b"PNGDATA"
 
