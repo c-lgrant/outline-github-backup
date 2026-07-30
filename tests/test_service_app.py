@@ -96,6 +96,27 @@ def test_backfill_on_start_defaults_off():
     assert worker.full_syncs == []
 
 
+def test_service_engine_is_paced_from_settings(monkeypatch):
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, client, dest, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("outline_backup.core.sync.SyncEngine", FakeEngine)
+    settings = Settings(
+        outline_webhook_secret=SECRET,
+        outline_url="https://wiki.example.com",
+        outline_api_token="tok",
+        dest_repo="example/backup-data",
+        github_token="gh",
+        backfill_pace_seconds=0.25,
+    )
+    with TestClient(create_app(settings)):
+        pass
+    assert captured["pace_seconds"] == 0.25
+
+
 def test_startup_refuses_empty_webhook_secret():
     app = create_app(Settings())
     with pytest.raises(RuntimeError, match="OUTLINE_WEBHOOK_SECRET is required"), TestClient(app):

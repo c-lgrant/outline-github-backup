@@ -190,10 +190,21 @@ class SyncEngine:
                 stale.extend(self._stale_for(tree, old_path, path, files))
                 pending.update(files)
                 _sleep(self.pace_seconds)
-        if prune:
+        if prune and not seen:
+            logger.warning("prune requested but the walk saw zero documents; refusing to prune")
+        elif prune:
             for doc_id in [d for d in manifest.documents if d not in seen]:
-                logger.info("pruning upstream-deleted document %s", doc_id)
-                stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
+                verdict = self.client.document_deleted_upstream(doc_id)
+                if verdict is True:
+                    logger.info("pruning upstream-deleted document %s", doc_id)
+                    stale.extend(p for p in manifest.remove_document(doc_id) if p in tree)
+                elif verdict is False:
+                    logger.warning(
+                        "document %s absent from listing but alive upstream; keeping "
+                        "(pagination skip or transient empty response)", doc_id,
+                    )
+                else:
+                    logger.warning("could not verify document %s upstream; keeping", doc_id)
         stale = list(dict.fromkeys(stale))
         changed = self._changed(pending, tree)
         manifest_bytes = manifest.to_bytes()

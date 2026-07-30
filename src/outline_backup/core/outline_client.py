@@ -71,6 +71,22 @@ class OutlineClient:
     def document_info(self, doc_id: str) -> dict:
         return self._post("documents.info", id=doc_id)["data"]
 
+    def document_deleted_upstream(self, doc_id: str) -> bool | None:
+        """Definitive deletion verdict: True (gone/archived), False (alive), None (unknown).
+
+        Used by prune, where absence from a listing is not proof of deletion —
+        only a 404 or an archived/deleted flag on documents.info is.
+        """
+        resp = self._http.post(
+            f"{self._base}/api/documents.info", json={"id": doc_id}, headers=self._headers
+        )
+        if resp.status_code == 404:
+            return True
+        if resp.status_code == 200:
+            data = resp.json().get("data") or {}
+            return bool(data.get("archivedAt") or data.get("deletedAt"))
+        return None
+
     def document_export(self, doc_id: str) -> str:
         return self._post("documents.export", id=doc_id)["data"]
 
