@@ -15,9 +15,13 @@ SECRET = "whsec_test"
 class FakeWorker:
     def __init__(self):
         self.events = []
+        self.full_syncs = []
 
     async def handle_event(self, event):
         self.events.append(event)
+
+    async def run_full_sync(self, message):
+        self.full_syncs.append(message)
 
     async def drain(self):
         pass
@@ -75,6 +79,42 @@ def test_bad_json_400():
     client, _ = make_client()
     body = b"not json"
     assert client.post("/webhook", content=body, headers=signed(body)).status_code == 400
+
+
+def test_backfill_on_start_kicks_full_sync():
+    worker = FakeWorker()
+    app = create_app(Settings(outline_webhook_secret=SECRET, backfill_on_start=True), worker=worker)
+    with TestClient(app):
+        pass
+    assert worker.full_syncs == ["backup: backfill on start"]
+
+
+def test_backfill_on_start_defaults_off():
+    client, worker = make_client()
+    with client:
+        pass
+    assert worker.full_syncs == []
+
+
+def test_service_engine_is_paced_from_settings(monkeypatch):
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, client, dest, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("outline_backup.core.sync.SyncEngine", FakeEngine)
+    settings = Settings(
+        outline_webhook_secret=SECRET,
+        outline_url="https://wiki.example.com",
+        outline_api_token="tok",
+        dest_repo="example/backup-data",
+        github_token="gh",
+        backfill_pace_seconds=0.25,
+    )
+    with TestClient(create_app(settings)):
+        pass
+    assert captured["pace_seconds"] == 0.25
 
 
 def test_startup_refuses_empty_webhook_secret():

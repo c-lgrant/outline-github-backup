@@ -26,33 +26,39 @@ def _settings(config: Path | None) -> Settings:
     return settings
 
 
-# Pace between documents on full-workspace walks (backfill/export) so we don't
-# hammer the Outline API and trip rate limits; single-doc syncs don't need it.
-BACKFILL_PACE_SECONDS = 0.5
-
-
 def _engine(settings: Settings, dest=None, pace_seconds: float = 0.0) -> SyncEngine:
     if dest is None:
         from outline_backup.destinations import get_destination
 
         dest = get_destination(settings)
-    return SyncEngine(
-        OutlineClient(settings.outline_url, settings.outline_api_token), dest, pace_seconds=pace_seconds
+    client = OutlineClient(
+        settings.outline_url,
+        settings.outline_api_token,
+        max_429_retries=settings.max_429_retries,
+        max_retry_after_seconds=settings.max_retry_after_seconds,
     )
+    return SyncEngine(client, dest, pace_seconds=pace_seconds)
 
 
 @app.command()
-def backfill(config: Path = CONFIG_OPT) -> None:
+def backfill(
+    config: Path = CONFIG_OPT,
+    prune: bool = typer.Option(
+        False, "--prune", help="Also remove mirrored documents that were deleted upstream."
+    ),
+) -> None:
     """Walk the whole workspace and commit anything missing or changed."""
-    changed = _engine(_settings(config), pace_seconds=BACKFILL_PACE_SECONDS).sync_all()
+    settings = _settings(config)
+    changed = _engine(settings, pace_seconds=settings.backfill_pace_seconds).sync_all(prune=prune)
     typer.echo(f"Synced {changed} changed file(s).")
 
 
 @app.command()
 def export(output_dir: Path, config: Path = CONFIG_OPT) -> None:
     """Snapshot the whole workspace to a local directory."""
+    settings = _settings(config)
     changed = _engine(
-        _settings(config), dest=LocalDestination(output_dir), pace_seconds=BACKFILL_PACE_SECONDS
+        settings, dest=LocalDestination(output_dir), pace_seconds=settings.backfill_pace_seconds
     ).sync_all()
     typer.echo(f"Exported {changed} file(s) to {output_dir}.")
 
@@ -69,12 +75,18 @@ def restore(
         hide_input=True,
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    collections: list[str] = typer.Option(
+        None, "--collections", help="Restore only these collection names (repeatable)."
+    ),
 ) -> None:
     """Restore a backup tree (local clone/export) into a fresh Outline instance."""
-    from outline_backup.core.restore import restore as run_restore
+    from outline_backup.core import restore as restore_module
 
-    report = run_restore(
-        OutlineClient(target_url, target_token), LocalDestination(source_dir), dry_run=dry_run
+    report = restore_module.restore(
+        OutlineClient(target_url, target_token),
+        LocalDestination(source_dir),
+        dry_run=dry_run,
+        collections=list(collections) if collections else None,
     )
     typer.echo(
         f"Collections: {report.collections} · documents matched: {report.documents_matched}"

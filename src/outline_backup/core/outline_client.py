@@ -20,28 +20,38 @@ class OutlineError(Exception):
 
 
 class OutlineClient:
-    def __init__(self, base_url: str, api_token: str, http: httpx.Client | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        api_token: str,
+        http: httpx.Client | None = None,
+        max_429_retries: int = MAX_429_RETRIES,
+        max_retry_after_seconds: float = MAX_RETRY_AFTER_SECONDS,
+    ):
         self._http = http or httpx.Client(timeout=30.0)
         self._base = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {api_token}"}
+        self._max_429_retries = max_429_retries
+        self._max_retry_after = max_retry_after_seconds
 
     def _post(self, endpoint: str, **payload) -> dict:
         resp = None
-        # 1 initial attempt + up to MAX_429_RETRIES retries, only for 429 responses.
-        for attempt in range(MAX_429_RETRIES + 1):
+        # 1 initial attempt + up to max_429_retries retries, only for 429 responses.
+        for attempt in range(self._max_429_retries + 1):
             resp = self._http.post(f"{self._base}/api/{endpoint}", json=payload, headers=self._headers)
             if resp.status_code != 429:
                 break
-            if attempt == MAX_429_RETRIES:
+            if attempt == self._max_429_retries:
                 raise OutlineError(f"{endpoint} failed: HTTP 429 rate_limit_exceeded")
+            backoff = _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]
             retry_after = resp.headers.get("Retry-After")
             if retry_after is not None:
                 try:
-                    delay: float = min(float(retry_after), MAX_RETRY_AFTER_SECONDS)
+                    delay: float = min(float(retry_after), self._max_retry_after)
                 except ValueError:
-                    delay = _BACKOFF_SECONDS[attempt]
+                    delay = backoff
             else:
-                delay = _BACKOFF_SECONDS[attempt]
+                delay = backoff
             _sleep(delay)
         if resp.status_code != 200:
             raise OutlineError(f"{endpoint} failed: HTTP {resp.status_code}: {resp.text[:200]}")
@@ -60,6 +70,22 @@ class OutlineClient:
     # -- documents / collections / comments ------------------------------
     def document_info(self, doc_id: str) -> dict:
         return self._post("documents.info", id=doc_id)["data"]
+
+    def document_deleted_upstream(self, doc_id: str) -> bool | None:
+        """Definitive deletion verdict: True (gone/archived), False (alive), None (unknown).
+
+        Used by prune, where absence from a listing is not proof of deletion —
+        only a 404 or an archived/deleted flag on documents.info is.
+        """
+        resp = self._http.post(
+            f"{self._base}/api/documents.info", json={"id": doc_id}, headers=self._headers
+        )
+        if resp.status_code == 404:
+            return True
+        if resp.status_code == 200:
+            data = resp.json().get("data") or {}
+            return bool(data.get("archivedAt") or data.get("deletedAt"))
+        return None
 
     def document_export(self, doc_id: str) -> str:
         return self._post("documents.export", id=doc_id)["data"]

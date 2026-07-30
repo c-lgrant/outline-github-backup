@@ -47,3 +47,64 @@ def test_export_requires_outline_url(tmp_path):
     cfg.write_text('OUTLINE_URL = ""\nOUTLINE_API_TOKEN = ""\n')
     result = runner.invoke(app, ["export", str(tmp_path / "out"), "--config", str(cfg)])
     assert result.exit_code != 0
+
+
+class StubEngine:
+    def __init__(self, record: dict):
+        self.record = record
+
+    def sync_all(self, message="backup: full sync", prune=False):
+        self.record["prune"] = prune
+        return 3
+
+
+def test_backfill_prune_flag(tmp_path, monkeypatch):
+    record: dict = {}
+
+    def fake_engine(settings, dest=None, pace_seconds=0.0):
+        record["pace"] = pace_seconds
+        return StubEngine(record)
+
+    monkeypatch.setattr("outline_backup.cli.main._engine", fake_engine)
+    result = runner.invoke(app, ["backfill", "--prune", "--config", str(write_config(tmp_path))])
+    assert result.exit_code == 0, result.output
+    assert record["prune"] is True
+
+
+def test_backfill_pace_comes_from_settings(tmp_path, monkeypatch):
+    record: dict = {}
+
+    def fake_engine(settings, dest=None, pace_seconds=0.0):
+        record["pace"] = pace_seconds
+        return StubEngine(record)
+
+    monkeypatch.setattr("outline_backup.cli.main._engine", fake_engine)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        f'OUTLINE_URL = "{BASE}"\n'
+        'OUTLINE_API_TOKEN = "tok"\n'
+        'DEST_TYPE = "github"\n'
+        'DEST_REPO = "example/backup-data"\n'
+        "BACKFILL_PACE_SECONDS = 0.1\n"
+    )
+    result = runner.invoke(app, ["backfill", "--config", str(cfg)])
+    assert result.exit_code == 0, result.output
+    assert record["pace"] == 0.1
+
+
+def test_cli_restore_collections_flag(tmp_path, monkeypatch):
+    from outline_backup.core.restore import RestoreReport
+
+    recorded: dict = {}
+
+    def fake_restore(client, source, *, dry_run=False, upload=None, collections=None):
+        recorded["collections"] = collections
+        return RestoreReport()
+
+    monkeypatch.setattr("outline_backup.core.restore.restore", fake_restore)
+    result = runner.invoke(app, [
+        "restore", str(tmp_path), "--target-url", BASE, "--target-token", "t",
+        "--collections", "Guides", "--collections", "Docs",
+    ])
+    assert result.exit_code == 0, result.output
+    assert recorded["collections"] == ["Guides", "Docs"]

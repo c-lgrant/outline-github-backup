@@ -361,3 +361,36 @@ def test_restore_matches_disambiguated_doc_by_original_title(tmp_path: Path):
     assert not any("no imported match" in w for w in report.warnings)
     sent = json.loads(comment_route.calls.last.request.content)
     assert sent["documentId"] == "newdoc2"
+
+
+def seed_two_collections(tmp_path: Path) -> LocalDestination:
+    dest = LocalDestination(tmp_path)
+    m = Manifest()
+    m.set_collection("col1", name="Guides", slug="guides-Ab12")
+    m.set_collection("col2", name="Docs", slug="docs-Cd34")
+    m.set_document("doc1", title="Intro", slug="intro-Xy9",
+                   path="collections/guides-Ab12/intro-Xy9.md",
+                   collection_id="col1", parent_document_id=None, updated_at=None)
+    m.set_document("doc2", title="Setup", slug="setup-Qq2",
+                   path="collections/docs-Cd34/setup-Qq2.md",
+                   collection_id="col2", parent_document_id=None, updated_at=None)
+    dest.write_files({
+        "_manifest.json": m.to_bytes(),
+        "collections/guides-Ab12/intro-Xy9.md": b"# Intro\n",
+        "collections/docs-Cd34/setup-Qq2.md": b"# Setup\n",
+    }, "seed")
+    return dest
+
+
+def test_restore_collections_filter_limits_scope(tmp_path: Path):
+    dest = seed_two_collections(tmp_path)
+    report = restore(OutlineClient(BASE, "tok"), dest, dry_run=True, collections=["Guides"])
+    assert report.collections == 1
+    assert report.collection_files == {"Guides": 1}
+
+
+def test_restore_collections_filter_warns_on_unknown_name(tmp_path: Path):
+    dest = seed_two_collections(tmp_path)
+    report = restore(OutlineClient(BASE, "tok"), dest, dry_run=True, collections=["Nope"])
+    assert report.collections == 0
+    assert any("Nope" in w for w in report.warnings)

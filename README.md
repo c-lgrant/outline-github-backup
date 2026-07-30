@@ -45,6 +45,10 @@ signing secret, subscribed to document, collection, and comment events.
 | `GITHUB_TOKEN` | — | Fine-grained PAT, contents read/write on the data repo only |
 | `DEBOUNCE_SECONDS` | `60` | Per-document quiet period before committing |
 | `INCLUDE_ATTACHMENTS` | `true` | Reserved: attachment mirroring is not yet implemented (planned) |
+| `BACKFILL_ON_START` | `false` | Run a full workspace sync when the service starts, catching up on webhooks missed while it was down |
+| `MAX_429_RETRIES` | `5` | Retries per Outline API call on HTTP 429 |
+| `MAX_RETRY_AFTER_SECONDS` | `60` | Cap on a `Retry-After` sleep |
+| `BACKFILL_PACE_SECONDS` | `0.5` | Pause between documents on full-workspace walks |
 
 ## What restore can and cannot bring back
 
@@ -56,16 +60,11 @@ provider-independent content layer.
 
 ## Roadmap & known limitations
 
-- `--backfill-on-start` service flag — planned. Today the service only reacts to webhooks after
-  it starts; run `outline-backup backfill` yourself to catch up on anything missed while it
-  was down.
-- `restore --collections` filter — planned. Restore always rebuilds every collection in the
-  backup tree; there is no way yet to restore a subset.
-- Renames land as two commits on git destinations (one for the old path's removal, one for the
-  new path), leaving a brief window where the tree looks inconsistent. A subsequent `backfill`
-  heals this.
-- `backfill` only adds and updates documents — it does not prune documents that were deleted
-  upstream in Outline. Deletions are handled by the live webhook path, not by backfill.
+- Attachment mirroring (`INCLUDE_ATTACHMENTS`) — planned. Markdown text and comments are
+  mirrored; embedded images/files are not yet downloaded.
+- `backfill` only adds and updates documents by default. Pass `--prune` to also remove
+  documents that were deleted upstream — useful to fully reconcile after missed webhooks.
+  (Live deletions are handled by the webhook path either way.)
 
 ## License
 
